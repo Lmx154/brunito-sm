@@ -122,6 +122,18 @@ bool StateManager::processCommand(CommandType cmd) {
             }
             break;
             
+        case CMD_NAVC_RESET_STATS:
+            // This command is always allowed
+            // Forward to NAVC via UART2
+            Serial2.println("RESET_STATS");
+            
+            // Log the action
+            char buffer[64];
+            FrameCodec::formatDebug(buffer, sizeof(buffer), "NAVC_STATS_RESET_REQUESTED");
+            Serial.println(buffer);
+            return true;
+            break;
+            
         default:
             // Other commands don't change state, check if they're allowed
             return isCommandAllowed(cmd);
@@ -131,8 +143,8 @@ bool StateManager::processCommand(CommandType cmd) {
 }
 
 bool StateManager::isCommandAllowed(CommandType cmd) const {
-    // DISARM is always allowed in any state
-    if (cmd == CMD_DISARM) {
+    // Commands that are always allowed in any state
+    if (cmd == CMD_DISARM || cmd == CMD_QUERY || cmd == CMD_NAVC_RESET_STATS) {
         return true;
     }
     
@@ -143,8 +155,8 @@ bool StateManager::isCommandAllowed(CommandType cmd) const {
             return true;
             
         case STATE_TEST:
-            // In TEST, only TEST, QUERY, and ARM are allowed
-            return (cmd == CMD_TEST || cmd == CMD_QUERY || cmd == CMD_ARM);
+            // In TEST, only TEST, QUERY, ARM are allowed
+            return (cmd == CMD_TEST || cmd == CMD_ARM);
             
         case STATE_ARMED:
             // In ARMED, all commands except TEST are allowed

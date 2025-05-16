@@ -79,17 +79,21 @@ public:
                                      uint32_t timestamp, int32_t lat, int32_t lon, int32_t alt) {
         snprintf(buffer, bufferSize, "<TELEM:%lu,%ld,%ld,%ld>", timestamp, lat, lon, alt);
     }
-    
-    // Calculate CRC16 for binary packet
+      // Calculate CRC16 for binary packet
     static uint16_t calculatePacketCRC(const uint8_t* packet, size_t length) {
         return calculateCRC16(packet, length - 2);  // Exclude the CRC bytes
     }
-    
-    // Verify CRC16 in a binary packet
+      // Verify CRC16 in a binary packet
     static bool verifyPacketCRC(const uint8_t* packet, size_t length) {
         uint16_t calculatedCRC = calculateCRC16(packet, length - 2);
         uint16_t packetCRC = (packet[length - 2] << 8) | packet[length - 1];
         return calculatedCRC == packetCRC;
+    }
+    
+    // Helper for NAVC sensor packet CRC calculation
+    static uint16_t calculateSensorPacketCRC(const uint8_t* packet, size_t length) {
+        // CRC16-CCITT (0xFFFF) for sensor packet (excluding the CRC field)
+        return calculateCRC16(packet, length - 2);
     }
 };
 

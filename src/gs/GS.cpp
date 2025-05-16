@@ -118,7 +118,7 @@ void processSerialInput() {
 
 // Print help information
 void printHelp() {
-  Serial.println("\n--- Brunito Ground Station v0.3 ---");
+  Serial.println("\n--- Brunito Ground Station v0.4 ---");
   Serial.println("Available commands:");
   Serial.println("  <CMD:ARM>                - Arm the flight controller");
   Serial.println("  <CMD:DISARM>             - Disarm the flight controller");
@@ -127,6 +127,7 @@ void printHelp() {
   Serial.println("  <CMD:QUERY>              - Query current state");
   Serial.println("  <CMD:FIND_ME>            - Activate buzzer for locating");
   Serial.println("  <CMD:CONTROL:param=val>  - Control actuators (e.g., servo=90)");
+  Serial.println("  <CMD:NAVC_RESET_STATS>   - Reset NAVC packet statistics");
   Serial.println("  <CMD:LORA_RESET_STATS>   - Reset LoRa statistics counters");
   Serial.println("  <CMD:LORA_STATS>         - Show detailed LoRa statistics");
   Serial.println("Type command and press Enter to send");
