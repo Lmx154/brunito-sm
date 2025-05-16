@@ -12,21 +12,11 @@ void CmdParser::processChar(char c) {
         return;
     }
     
-    // Add debug for first character received
-    if (cmdIndex == 0 && c == '<') {
-        char buffer[64];
-        FrameCodec::formatDebug(buffer, sizeof(buffer), "CMD_START");
-        Serial.println(buffer);
-    }
-    
     // Check for end of command
     if (c == '>') {
         // Process complete command
         if (cmdIndex > 0 && cmdBuffer[0] == '<') {
             cmdBuffer[cmdIndex] = 0; // Null terminate
-            char buffer[64];
-            FrameCodec::formatDebug(buffer, sizeof(buffer), cmdBuffer);
-            Serial.println(buffer);
             parseAndExecute();
         } else {
             char buffer[64];

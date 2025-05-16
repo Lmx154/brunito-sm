@@ -25,24 +25,8 @@ unsigned long lastHeartbeatUpdate = 0;
 
 void cmdTask() {
   // Process any incoming serial data
-  static bool debugPrinted = false;
-
-  if (Serial.available() > 0 && !debugPrinted) {
-    char buffer[64];
-    FrameCodec::formatDebug(buffer, sizeof(buffer), "SERIAL_DATA_AVAILABLE");
-    Serial.println(buffer);
-    debugPrinted = true;
-  }
-  
   while (Serial.available() > 0) {
     char c = Serial.read();
-    // Print the character as hex to debug
-    char debugChar[16];
-    sprintf(debugChar, "0x%02X", c);
-    char buffer[64];
-    FrameCodec::formatDebug(buffer, sizeof(buffer), debugChar);
-    Serial.println(buffer);
-    
     cmdParser.processChar(c);
   }
 }
@@ -112,23 +96,9 @@ void setup() {
   // Send initialization messages using FrameCodec
   char buffer[64];
   
-  FrameCodec::formatDebug(buffer, sizeof(buffer), "FC_INIT");
+  FrameCodec::formatDebug(buffer, sizeof(buffer), "FC_INIT: Brunito Flight Controller v0.2");
   Serial.println(buffer);
-    // Add explicit command instructions
-  FrameCodec::formatDebug(buffer, sizeof(buffer), "WAITING_FOR_COMMANDS");
-  Serial.println(buffer);
-  FrameCodec::formatDebug(buffer, sizeof(buffer), "FORMAT: <CMD:COMMAND>");
-  Serial.println(buffer);
-  FrameCodec::formatDebug(buffer, sizeof(buffer), "FORMAT WITH PARAMS: <CMD:COMMAND:param1=val1,param2=val2>");
-  Serial.println(buffer);
-  FrameCodec::formatDebug(buffer, sizeof(buffer), "FORMAT WITH CHECKSUM: <CMD:COMMAND:param:XXXX>");
-  Serial.println(buffer);
-  FrameCodec::formatDebug(buffer, sizeof(buffer), "AVAILABLE: ARM, ENTER_TEST, DISARM, QUERY, CONTROL");
-  Serial.println(buffer);
-  FrameCodec::formatDebug(buffer, sizeof(buffer), "CONTROL PARAMS: servo=0-180,buzzer=0-1");
-  Serial.println(buffer);
-  
-  FrameCodec::formatDebug(buffer, sizeof(buffer), "FSM_READY");
+  FrameCodec::formatDebug(buffer, sizeof(buffer), "COMMANDS: <CMD:COMMAND:params:checksum>");
   Serial.println(buffer);
   
   FrameCodec::formatStatus(buffer, sizeof(buffer), "IDLE", millis());
