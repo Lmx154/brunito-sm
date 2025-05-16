@@ -110,6 +110,14 @@ void CmdParser::sendAck(bool success, const char* message) {
     char ackBuffer[64];
     FrameCodec::formatCmdAck(ackBuffer, sizeof(ackBuffer), success, message);
     Serial.println(ackBuffer);
+    
+    // Also forward ACK over LoRa (if available)
+    #ifdef FC_BUILD
+    extern LoraManager loraManager;
+    if (loraManager.isInitialized()) {
+        loraManager.sendPacket(LORA_TYPE_CMD, ackBuffer, strlen(ackBuffer));
+    }
+    #endif
 }
 
 // Calculate CRC16-CCITT checksum for command

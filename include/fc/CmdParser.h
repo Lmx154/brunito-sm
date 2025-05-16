@@ -4,6 +4,8 @@
 #include <Arduino.h>
 #include "../include/fc/State.h"
 #include "../include/utils/FrameCodec.h"
+#include "../include/utils/LoraManager.h"
+#include "../include/config/lora.h"
 
 // Parameter range definitions for validation
 struct ParamRange {
