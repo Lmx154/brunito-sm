@@ -114,13 +114,18 @@ void setup() {
   
   FrameCodec::formatDebug(buffer, sizeof(buffer), "FC_INIT");
   Serial.println(buffer);
-  
-  // Add explicit command instructions
+    // Add explicit command instructions
   FrameCodec::formatDebug(buffer, sizeof(buffer), "WAITING_FOR_COMMANDS");
   Serial.println(buffer);
   FrameCodec::formatDebug(buffer, sizeof(buffer), "FORMAT: <CMD:COMMAND>");
   Serial.println(buffer);
-  FrameCodec::formatDebug(buffer, sizeof(buffer), "AVAILABLE: ARM, ENTER_TEST, DISARM, QUERY");
+  FrameCodec::formatDebug(buffer, sizeof(buffer), "FORMAT WITH PARAMS: <CMD:COMMAND:param1=val1,param2=val2>");
+  Serial.println(buffer);
+  FrameCodec::formatDebug(buffer, sizeof(buffer), "FORMAT WITH CHECKSUM: <CMD:COMMAND:param:XXXX>");
+  Serial.println(buffer);
+  FrameCodec::formatDebug(buffer, sizeof(buffer), "AVAILABLE: ARM, ENTER_TEST, DISARM, QUERY, CONTROL");
+  Serial.println(buffer);
+  FrameCodec::formatDebug(buffer, sizeof(buffer), "CONTROL PARAMS: servo=0-180,buzzer=0-1");
   Serial.println(buffer);
   
   FrameCodec::formatDebug(buffer, sizeof(buffer), "FSM_READY");
