@@ -59,9 +59,11 @@ public:
     
     // Command authorization check
     bool isCommandAllowed(CommandType cmd) const;
-    
-    // Convert state to string for debug
+      // Convert state to string for debug
     const char* getStateString() const;
+    
+    // Helper to convert a state enum to string
+    const char* getStateStringFromEnum(SystemState state) const;
 };
 
 #endif // STATE_H

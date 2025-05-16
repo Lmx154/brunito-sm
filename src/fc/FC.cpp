@@ -26,6 +26,7 @@ LoraManager loraManager;
 unsigned long lastStatusUpdate = 0;
 unsigned long lastHeartbeatUpdate = 0;
 unsigned long lastLoraCheck = 0;
+unsigned long lastCommandTime = 0; // Used for optimizing command ACK processing
 
 void cmdTask() {
   // Process any incoming serial data (from USB-CDC) 
@@ -184,6 +185,9 @@ void updateHeartbeatPattern() {
 void handleLoraPacket(LoraPacket* packet) {
   // Process packet
   if (packet->type == LORA_TYPE_CMD) {
+    // Update the last command time
+    lastCommandTime = millis();
+    
     // Process command received from GS
     char cmdBuffer[LORA_MAX_PACKET_SIZE];
     memcpy(cmdBuffer, packet->data, packet->len);
@@ -202,6 +206,9 @@ void handleLoraPacket(LoraPacket* packet) {
     if (packet->len == 0 || cmdBuffer[packet->len-1] != '>') {
       cmdParser.processChar('>');
     }
+    
+    // Force an extra queue check to immediately process any resulting ACKs
+    loraManager.checkQueue();
   }
 }
 
@@ -255,6 +262,15 @@ void loop() {
     
     // Process queue (send pending packets, retry failed ones)
     loraManager.checkQueue();
+    
+    // For more reliability, process the queue more frequently for ACKs when commands are being processed
+    static unsigned long lastCommandTime = 0;
+    const unsigned long commandProcessingWindow = 1000; // 1 second window after receiving a command
+    
+    if (now - lastCommandTime < commandProcessingWindow) {
+      // We are in a post-command processing window, check queue more frequently
+      loraManager.checkQueue();
+    }
   }
   
   // Update heartbeat pattern if state changed

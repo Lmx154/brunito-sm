@@ -171,7 +171,16 @@ bool LoraManager::sendPacket(uint8_t type, const char* data, size_t len) {
 
 bool LoraManager::sendCommand(const char* cmd) {
     // Send command via LoRa
-    return sendPacket(LORA_TYPE_CMD, cmd, strlen(cmd));
+    bool result = sendPacket(LORA_TYPE_CMD, cmd, strlen(cmd));
+    
+    // For critical commands like DISARM, immediately process the queue to send them with highest priority
+    if (result && strstr(cmd, "DISARM") != NULL) {
+        // Give a slight delay to ensure proper radio state
+        delay(10);
+        checkQueue();
+    }
+    
+    return result;
 }
 
 void LoraManager::checkReceived() {
@@ -194,8 +203,7 @@ void LoraManager::checkReceived() {
         // Get packet info (in RadioLib 7.1.2)
         rssi = radio.getRSSI();
         snr = radio.getSNR();
-        
-        // Process packet if received successfully
+          // Process packet if received successfully
         if (state == RADIOLIB_ERR_NONE) {
             // Update statistics (only for non-ACK packets)
             packetsReceived++;
@@ -249,9 +257,18 @@ void LoraManager::checkQueue() {
                     } else {
                         // Increment retry count and set next retry time
                         queueRetries[i]++;
+                          // Special handling for commands (try more times for critical commands)
+                        int maxRetries = LORA_MAX_RETRIES;
+                        
+                        // If this is a DISARM command, try even harder (more retries)
+                        if (outQueue[i].type == LORA_TYPE_CMD && 
+                            outQueue[i].len >= 11 && // Length check to avoid buffer overruns
+                            memcmp(outQueue[i].data, "<CMD:DISARM", 11) == 0) {
+                            maxRetries = LORA_MAX_RETRIES + 1; // One extra try for safety critical commands
+                        }
                         
                         // If max retries reached, remove from queue
-                        if (queueRetries[i] >= LORA_MAX_RETRIES) {
+                        if (queueRetries[i] >= maxRetries) {
                             queueActive[i] = false;
                             Serial.println("LoRa TX: Max retries reached, dropping packet");
                             
@@ -294,27 +311,35 @@ void LoraManager::processIncomingPacket(LoraPacket* packet) {
     if (packet->source == targetAddress) {
         lastReceivedTime = millis();
     }
+      // Declare variable before the switch statement to fix the "crosses initialization" error
+    bool foundMatch = false;
     
     // Handle based on packet type
-    switch (packet->type) {
-        case LORA_TYPE_CMD:
-            // Forward command to callback
+    switch (packet->type) {        case LORA_TYPE_CMD:
+            // Send ACK for command FIRST before processing to ensure prompt acknowledgment
+            sendAckImmediate(packet->id);
+            
+            // Then forward command to callback for processing
             if (onPacketReceived) {
                 onPacketReceived(packet);
             }
-            
-            // Send ACK for command
-            sendAck(packet->id);
             break;
             
         case LORA_TYPE_ACK:
             // Find matching packet in queue and remove it
+            foundMatch = false; // Reset the variable
             for (int i = 0; i < QUEUE_SIZE; i++) {
                 if (queueActive[i] && outQueue[i].id == packet->id) {
                     queueActive[i] = false;
                     Serial.println("LoRa ACK received, packet removed from queue");
+                    foundMatch = true;
                     break;
                 }
+            }
+            
+            // If no match was found, this could be a duplicate or delayed ACK
+            if (!foundMatch) {
+                Serial.println("LoRa RX: ACK for unknown packet ID");
             }
             break;
         
@@ -369,6 +394,51 @@ void LoraManager::sendAck(uint16_t packetId) {
                 queueRetryTime[i] += 100; // Add 100ms delay to other packets
             }
         }
+        
+        // For improved reliability, immediately try to send the ACK
+        // This ensures faster acknowledgment without waiting for the next checkQueue call
+        checkQueue();
+    }
+}
+
+void LoraManager::sendAckImmediate(uint16_t packetId) {
+    // Create ACK packet
+    LoraPacket ackPacket;
+    ackPacket.type = LORA_TYPE_ACK;
+    ackPacket.source = address;
+    ackPacket.dest = targetAddress;
+    ackPacket.id = packetId; // Use same ID as the packet we're acknowledging
+    ackPacket.len = 0;
+    
+    // Encode the packet
+    uint8_t buffer[LORA_MAX_PACKET_SIZE];
+    size_t size;
+    
+    if (encodePacket(&ackPacket, buffer, &size)) {
+        // Log the immediate ACK
+        Serial.println("LoRa TX: Sending immediate ACK");
+        
+        // Cancel receive mode and send ACK packet directly
+        radio.standby();
+        
+        // In RadioLib 7.1.2, transmit takes an array and length
+        int state = radio.transmit(buffer, size);
+        
+        if (state == RADIOLIB_ERR_NONE) {
+            Serial.println("LoRa TX: Immediate ACK sent successfully");
+        } else {
+            Serial.print("LoRa TX: Failed to send immediate ACK, error code ");
+            Serial.println(state);
+            
+            // Add to regular queue as a fallback
+            sendAck(packetId);
+        }
+        
+        // Restart receiver
+        radio.startReceive();
+    } else {
+        // If encoding failed, fall back to regular queued ACK
+        sendAck(packetId);
     }
 }
 

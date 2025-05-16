@@ -28,9 +28,9 @@
 #define LORA_DIO1             PA10
 
 // Timeouts and retries
-#define LORA_ACK_TIMEOUT_MS   500
+#define LORA_ACK_TIMEOUT_MS   800
 #define LORA_MAX_RETRIES      3
-#define LORA_RETRY_BASE_MS    250  // Base backoff time for retries
+#define LORA_RETRY_BASE_MS    300  // Base backoff time for retries
 #define LORA_MAX_PACKET_SIZE  128
 
 // Message types

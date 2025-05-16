@@ -74,15 +74,41 @@ bool CmdParser::parseAndExecute() {
             return false;
         }
     }
-    
-    // Process command
+      // Process command
     bool success = stateManager.processCommand(cmd);
-    
-    // Send acknowledgment
+      // Enhanced command acknowledgment reporting
     if (success) {
-        sendAck(true, stateManager.getStateString());
+        // For state transition commands, report the resulting state
+        if (cmd == CMD_DISARM) {
+            sendAck(true, "IDLE");
+        } else if (cmd == CMD_ARM) {
+            sendAck(true, "ARMED");
+        } else if (cmd == CMD_ENTER_TEST) {
+            sendAck(true, "TEST");
+        } else if (cmd == CMD_ENTER_RECOVERY) {
+            sendAck(true, "RECOVERY");
+        } else if (cmd == CMD_FIND_ME) {
+            sendAck(true, "FIND_ME_ACTIVATED");
+        } else if (cmd == CMD_TEST) {
+            sendAck(true, "TEST_SUCCESS");
+        } else if (cmd == CMD_QUERY) {
+            // For query, include the current state in the acknowledgment
+            sendAck(true, stateManager.getStateString());
+        } else if (cmd == CMD_CONTROL) {
+            sendAck(true, "CONTROL_APPLIED");
+        } else {
+            // For any other command, use the current state
+            sendAck(true, stateManager.getStateString());
+        }
     } else {
-        sendAck(false, "DENIED");
+        // For failed commands, provide a more descriptive denial reason
+        if (cmd == CMD_ARM && stateManager.getCurrentState() == STATE_ARMED) {
+            sendAck(false, "ALREADY_ARMED");        } else if (cmd == CMD_ENTER_TEST && stateManager.getCurrentState() != STATE_IDLE && stateManager.getCurrentState() != STATE_TEST) {
+            sendAck(false, "MUST_BE_IDLE");        } else if (cmd == CMD_ENTER_RECOVERY && stateManager.getCurrentState() != STATE_ARMED && stateManager.getCurrentState() != STATE_RECOVERY) {
+            sendAck(false, "MUST_BE_ARMED");
+        } else {
+            sendAck(false, "DENIED");
+        }
     }
     
     return success;

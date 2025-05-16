@@ -20,6 +20,11 @@ SystemState StateManager::getCurrentState() const {
 }
 
 bool StateManager::changeState(SystemState newState) {
+    // If we're already in the requested state, consider it a success
+    if (currentState == newState) {
+        return true;
+    }
+    
     // Check if transition is allowed
     bool allowed = false;
     
@@ -52,10 +57,21 @@ bool StateManager::changeState(SystemState newState) {
             }
             break;
     }
-    
-    // If transition is allowed, update state
+      // If transition is allowed, update state
     if (allowed) {
+        // Record the previous state before changing
+        SystemState oldState = currentState;
         currentState = newState;
+        
+        // Debug output for state transitions
+        char debugMsg[48];
+        snprintf(debugMsg, sizeof(debugMsg), "STATE_CHANGE: %s -> %s", 
+                 getStateStringFromEnum(oldState), 
+                 getStateStringFromEnum(newState));
+                 
+        char buffer[64];
+        FrameCodec::formatDebug(buffer, sizeof(buffer), debugMsg);
+        Serial.println(buffer);
         
         // If entering ARMED state, record timestamp
         if (newState == STATE_ARMED) {
@@ -73,26 +89,36 @@ bool StateManager::processCommand(CommandType cmd) {
     switch (cmd) {
         case CMD_DISARM:
             // DISARM is always allowed and takes us to IDLE
-            return changeState(STATE_IDLE);
-            
-        case CMD_ARM:
+            if (currentState != STATE_IDLE) {
+                changeState(STATE_IDLE);
+            }
+            // DISARM should always succeed even if already in IDLE state
+            return true;
+              case CMD_ARM:
             // ARM is allowed from IDLE or TEST, takes us to ARMED
             if (currentState == STATE_IDLE || currentState == STATE_TEST) {
                 return changeState(STATE_ARMED);
+            } else if (currentState == STATE_ARMED) {
+                // Already in ARMED state, still return success
+                return true;
             }
             break;
-            
-        case CMD_ENTER_TEST:
+              case CMD_ENTER_TEST:
             // ENTER_TEST is only allowed from IDLE
             if (currentState == STATE_IDLE) {
                 return changeState(STATE_TEST);
+            } else if (currentState == STATE_TEST) {
+                // Already in TEST state, still return success
+                return true;
             }
             break;
-            
-        case CMD_ENTER_RECOVERY:
+              case CMD_ENTER_RECOVERY:
             // ENTER_RECOVERY is only allowed from ARMED
             if (currentState == STATE_ARMED) {
                 return changeState(STATE_RECOVERY);
+            } else if (currentState == STATE_RECOVERY) {
+                // Already in RECOVERY state, still return success
+                return true;
             }
             break;
             
@@ -105,24 +131,28 @@ bool StateManager::processCommand(CommandType cmd) {
 }
 
 bool StateManager::isCommandAllowed(CommandType cmd) const {
-    // Check if a command is allowed in the current state
+    // DISARM is always allowed in any state
+    if (cmd == CMD_DISARM) {
+        return true;
+    }
+    
+    // Check state-specific command permissions
     switch (currentState) {
         case STATE_IDLE:
             // In IDLE, all commands are allowed
             return true;
             
         case STATE_TEST:
-            // In TEST, only TEST, QUERY, ARM, and DISARM are allowed
-            return (cmd == CMD_TEST || cmd == CMD_QUERY || 
-                    cmd == CMD_ARM || cmd == CMD_DISARM);
+            // In TEST, only TEST, QUERY, and ARM are allowed
+            return (cmd == CMD_TEST || cmd == CMD_QUERY || cmd == CMD_ARM);
             
         case STATE_ARMED:
             // In ARMED, all commands except TEST are allowed
             return (cmd != CMD_TEST);
             
         case STATE_RECOVERY:
-            // In RECOVERY, only DISARM and FIND_ME are allowed
-            return (cmd == CMD_DISARM || cmd == CMD_FIND_ME);
+            // In RECOVERY, only FIND_ME is allowed (DISARM already handled)
+            return (cmd == CMD_FIND_ME);
             
         default:
             return false;
@@ -169,8 +199,9 @@ void StateManager::reportMotion(float accelMagnitude) {
     }
 }
 
-const char* StateManager::getStateString() const {
-    switch (currentState) {
+// Get state string from enum value (helper for internal use)
+const char* StateManager::getStateStringFromEnum(SystemState state) const {
+    switch (state) {
         case STATE_IDLE:
             return "IDLE";
         case STATE_TEST:
@@ -182,4 +213,8 @@ const char* StateManager::getStateString() const {
         default:
             return "UNKNOWN";
     }
+}
+
+const char* StateManager::getStateString() const {
+    return getStateStringFromEnum(currentState);
 }

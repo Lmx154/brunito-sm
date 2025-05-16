@@ -65,13 +65,13 @@ private:
     uint32_t lastStatsResetTime;
     uint32_t lastReceivedTime;   // Timestamp of last received packet from target
     uint32_t connectionTimeout;  // Time in ms after which connection is considered lost
-    
-    // Methods for packet handling
+      // Methods for packet handling
     bool encodePacket(LoraPacket* packet, uint8_t* buffer, size_t* size);
     bool decodePacket(uint8_t* buffer, size_t size, LoraPacket* packet);
     int findFreeQueueSlot();
     void processIncomingPacket(LoraPacket* packet);
     void sendAck(uint16_t packetId);
+    void sendAckImmediate(uint16_t packetId); // Sends ACK immediately without queuing
     
 public:
     LoraManager();
