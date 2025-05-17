@@ -114,7 +114,8 @@ bool LoraManager::sendSettings() {
     uint8_t buffer[sizeof(settings)];
     memcpy(buffer, &settings, sizeof(settings));
     
-    return sendPacket(LORA_TYPE_SETTINGS, (const char*)buffer, sizeof(settings));
+    // Use retries for settings packets since they're important
+    return sendPacket(LORA_TYPE_SETTINGS, (const char*)buffer, sizeof(settings), 0);
 }
 
 bool LoraManager::setSettings(LoraSettings settings) {
@@ -141,7 +142,7 @@ bool LoraManager::setSettings(LoraSettings settings) {
     return true;
 }
 
-bool LoraManager::sendPacket(uint8_t type, const char* data, size_t len) {
+bool LoraManager::sendPacket(uint8_t type, const char* data, size_t len, uint8_t flags) {
     // Find a free queue slot
     int slot = findFreeQueueSlot();
     if (slot < 0) {
@@ -163,15 +164,23 @@ bool LoraManager::sendPacket(uint8_t type, const char* data, size_t len) {
     // Add to queue
     memcpy(&outQueue[slot], &packet, sizeof(packet));
     queueActive[slot] = true;
-    queueRetries[slot] = 0;
+    
+    // Check if this packet should be sent without retries
+    if (flags & PACKET_FLAG_NO_RETRY) {
+        // Mark as already at max retries - 1, so it only gets sent once
+        queueRetries[slot] = LORA_MAX_RETRIES - 1; 
+    } else {
+        queueRetries[slot] = 0;
+    }
+    
     queueRetryTime[slot] = millis(); // Send immediately
     
     return true;
 }
 
 bool LoraManager::sendCommand(const char* cmd) {
-    // Send command via LoRa
-    bool result = sendPacket(LORA_TYPE_CMD, cmd, strlen(cmd));
+    // Send command via LoRa - always use retries for commands (flags=0)
+    bool result = sendPacket(LORA_TYPE_CMD, cmd, strlen(cmd), 0);
     
     // For critical commands like DISARM, immediately process the queue to send them with highest priority
     if (result && strstr(cmd, "DISARM") != NULL) {

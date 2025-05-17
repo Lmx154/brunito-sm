@@ -1,7 +1,16 @@
 /**
  * GS.cpp - Ground Station for Brunito Project
  * 
- * This file contains the Ground Station (GS) module implementation.
+ * This   } else if (packet->type == LORA_TYPE_TELEM) {
+    // Telemetry from FC - process with TelemParser
+    char msgBuffer[LORA_MAX_PACKET_SIZE + 1]; // +1 for null terminator
+    memcpy(msgBuffer, packet->data, packet->len);
+    msgBuffer[packet->len] = '\0'; // Ensure null termination
+        
+    // Check if this is a status update packet (now used for heartbeat)
+    if (strncmp(msgBuffer, "<STATUS:", 8) == 0) {
+      // This is a status message that also serves as heartbeat
+      // We already know it's not a duplicate since we checked at the beginning of the function Ground Station (GS) module implementation.
  * Phase 3: Implements LoRa communication with the Flight Controller.
  */
 
@@ -31,6 +40,22 @@ String currentLinkStatus = "UNKNOWN";
 
 // Function to handle received LoRa packets
 void handleLoraPacket(LoraPacket* packet) {
+  static uint16_t lastPacketIds[4] = {0}; // Track last packet ID for each packet type
+  
+  // Check if we've already seen this exact packet (same type and ID)
+  // This prevents processing duplicate packets caused by the LoRa retry mechanism
+  if (lastPacketIds[packet->type] == packet->id) {
+    // Duplicate packet detected, don't process it again
+    Serial.print("# Ignoring duplicate packet: type=");
+    Serial.print(packet->type);
+    Serial.print(", id=");
+    Serial.println(packet->id);
+    return;
+  }
+  
+  // This is a new packet, so update the last seen ID for this type
+  lastPacketIds[packet->type] = packet->id;
+  
   // Update link status whenever we receive any packet
   linkStatusChanged = true;
   
@@ -65,17 +90,38 @@ void handleLoraPacket(LoraPacket* packet) {
       // Only process each status packet once by tracking the packet ID
       if (packet->id != lastStatusPacketId) {
         lastStatusPacketId = packet->id;
+          // Extract the state from the status message for change detection
+        char extractedState[16] = "";
+        // Extract state name between STATUS: and first comma
+        const char* stateStart = msgBuffer + 8; // Skip "<STATUS:"
+        const char* stateEnd = strchr(stateStart, ',');
+        if (stateEnd != NULL) {
+          size_t stateLen = stateEnd - stateStart;
+          if (stateLen < sizeof(extractedState)) {
+            strncpy(extractedState, stateStart, stateLen);
+            extractedState[stateLen] = '\0';
+          }
+        }
         
-        // Print status messages but limit to once every 10 seconds to avoid log spam
-        static unsigned long lastStatusPrinted = 0;
-        unsigned long now = millis();
-        
-        if (now - lastStatusPrinted >= 10000) {
-          lastStatusPrinted = now;
+        // Track state changes and always print them
+        static String lastState = "UNKNOWN";
+        if (strcmp(extractedState, lastState.c_str()) != 0) {
+          // State changed - always print this
+          Serial.print("# STATE CHANGE: ");
+          Serial.println(extractedState);
+          lastState = extractedState;
+        } else {
+          // Same state - print status messages but limit to once every 10 seconds to avoid log spam
+          static unsigned long lastStatusPrinted = 0;
+          unsigned long now = millis();
           
-          // Only occasionally show the status message
-          Serial.print("# STATUS: ");
-          Serial.println(msgBuffer);
+          if (now - lastStatusPrinted >= 10000) {
+            lastStatusPrinted = now;
+            
+            // Only occasionally show the status message
+            Serial.print("# STATUS: ");
+            Serial.println(msgBuffer);
+          }
         }
       }
     } else if (strncmp(msgBuffer, "<HEARTBEAT:", 11) == 0) {
