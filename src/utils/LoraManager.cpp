@@ -159,11 +159,10 @@ bool LoraManager::sendPacket(uint8_t type, const char* data, size_t len) {
     size_t copyLen = min(len, sizeof(packet.data));
     memcpy(packet.data, data, copyLen);
     packet.len = copyLen;
-    
-    // Add to queue
+      // Add to queue
     memcpy(&outQueue[slot], &packet, sizeof(packet));
     queueActive[slot] = true;
-    queueRetries[slot] = 0;
+    queueRetries[slot] = (type == LORA_TYPE_STATUS) ? LORA_MAX_RETRIES : 0;
     queueRetryTime[slot] = millis(); // Send immediately
     
     return true;
@@ -342,8 +341,7 @@ void LoraManager::processIncomingPacket(LoraPacket* packet) {
                 Serial.println("LoRa RX: ACK for unknown packet ID");
             }
             break;
-        
-        case LORA_TYPE_TELEM:
+          case LORA_TYPE_TELEM:
             // Forward telemetry to callback
             if (onPacketReceived) {
                 onPacketReceived(packet);
@@ -351,6 +349,13 @@ void LoraManager::processIncomingPacket(LoraPacket* packet) {
             
             // No ACK needed for telemetry
             break;
+            
+        case LORA_TYPE_STATUS:
+            // Forward to callback, but never ACK
+            if (onPacketReceived) {
+                onPacketReceived(packet);
+            }
+            return;   // nothing else
         
         case LORA_TYPE_SETTINGS:
             // Apply LoRa settings from packet

@@ -27,6 +27,7 @@ UartManager uartManager; // For binary packet reception from NAVC
 
 // Task scheduling variables
 unsigned long lastStatusUpdate = 0;
+static const uint32_t STATUS_PERIOD_MS = 10'000;   // 10 s everywhere
 unsigned long lastHeartbeatUpdate = 0;
 unsigned long lastLoraCheck = 0;
 unsigned long lastCommandTime = 0; // Used for optimizing command ACK processing
@@ -124,30 +125,11 @@ void statusTask() {
   // Update state manager (check for auto transitions)
   stateManager.updateState();
   
-  // Periodic status updates at different rates based on state
+  // Periodic status updates at fixed rate
   unsigned long now = millis();
-  unsigned long interval;
   
-  // Set status update interval based on state
-  switch (stateManager.getCurrentState()) {
-    case STATE_IDLE:
-      interval = 1000; // 1Hz in IDLE
-      break;
-    case STATE_TEST:
-      interval = 200;  // 5Hz in TEST
-      break;
-    case STATE_ARMED:
-      interval = 50;   // 20Hz in ARMED
-      break;
-    case STATE_RECOVERY:
-      interval = 1000; // 1Hz in RECOVERY
-      break;
-    default:
-      interval = 1000;
-  }
-    // Send status update if interval has passed
-  if (now - lastStatusUpdate >= interval) {
-    lastStatusUpdate = now;
+  // Send status update if interval has passed
+  if (now - lastStatusUpdate >= STATUS_PERIOD_MS) {    lastStatusUpdate = now;
     
     // Send status message using FrameCodec
     char statusBuffer[64];
@@ -155,13 +137,9 @@ void statusTask() {
                             stateManager.getStateString(), millis());
     Serial.println(statusBuffer);
     
-    // Also send status update over LoRa (at a lower rate to avoid congestion)
-    static uint8_t loraCounter = 0;
-    if (loraManager.isInitialized() && 
-        (loraCounter++ % 5 == 0 || // Every 5th update for IDLE/RECOVERY 
-         stateManager.getCurrentState() == STATE_ARMED)) { // Every update for ARMED
-      
-      loraManager.sendPacket(LORA_TYPE_TELEM, statusBuffer, strlen(statusBuffer));
+    // Fire-and-forget over LoRa (no ACK, 0 retries)
+    if (loraManager.isInitialized()) {
+      loraManager.sendPacket(LORA_TYPE_STATUS, statusBuffer, strlen(statusBuffer));
     }
   }
 }

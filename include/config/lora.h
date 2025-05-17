@@ -38,6 +38,7 @@
 #define LORA_TYPE_ACK         0x02
 #define LORA_TYPE_TELEM       0x03
 #define LORA_TYPE_SETTINGS    0x04
+#define LORA_TYPE_STATUS      0x05   // new, fire-and-forget
 
 // Settings for handshake
 typedef struct {
