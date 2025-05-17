@@ -1,7 +1,16 @@
 /**
  * GS.cpp - Ground Station for Brunito Project
  * 
- * This file contains the Ground Station (GS) module implementation.
+ * This   } else if (packet->type == LORA_TYPE_TELEM) {
+    // Telemetry from FC - process with TelemParser
+    char msgBuffer[LORA_MAX_PACKET_SIZE + 1]; // +1 for null terminator
+    memcpy(msgBuffer, packet->data, packet->len);
+    msgBuffer[packet->len] = '\0'; // Ensure null termination
+        
+    // Check if this is a status update packet (now used for heartbeat)
+    if (strncmp(msgBuffer, "<STATUS:", 8) == 0) {
+      // This is a status message that also serves as heartbeat
+      // We already know it's not a duplicate since we checked at the beginning of the function Ground Station (GS) module implementation.
  * Phase 3: Implements LoRa communication with the Flight Controller.
  */
 
@@ -25,9 +34,31 @@ bool cmdReady = false;
 // Variables for task scheduling
 unsigned long lastHeartbeatUpdate = 0;
 unsigned long lastLoraCheck = 0;
+unsigned long lastLinkStatusUpdate = 0;
+bool linkStatusChanged = false;
+String currentLinkStatus = "UNKNOWN";
 
 // Function to handle received LoRa packets
 void handleLoraPacket(LoraPacket* packet) {
+  static uint16_t lastPacketIds[4] = {0}; // Track last packet ID for each packet type
+  
+  // Check if we've already seen this exact packet (same type and ID)
+  // This prevents processing duplicate packets caused by the LoRa retry mechanism
+  if (lastPacketIds[packet->type] == packet->id) {
+    // Duplicate packet detected, don't process it again
+    Serial.print("# Ignoring duplicate packet: type=");
+    Serial.print(packet->type);
+    Serial.print(", id=");
+    Serial.println(packet->id);
+    return;
+  }
+  
+  // This is a new packet, so update the last seen ID for this type
+  lastPacketIds[packet->type] = packet->id;
+  
+  // Update link status whenever we receive any packet
+  linkStatusChanged = true;
+  
   // Process packet
   if (packet->type == LORA_TYPE_CMD) {
     // Command or ACK from FC - forward to Serial
@@ -42,25 +73,75 @@ void handleLoraPacket(LoraPacket* packet) {
     snprintf(buffer, sizeof(buffer), "<RSSI:%d,SNR:%.2f>", 
              loraManager.getLastRssi(), loraManager.getLastSnr());
     Serial.println(buffer);
-  }
-  else if (packet->type == LORA_TYPE_TELEM) {
+  }  else if (packet->type == LORA_TYPE_TELEM) {
     // Telemetry from FC - process with TelemParser
     char msgBuffer[LORA_MAX_PACKET_SIZE + 1]; // +1 for null terminator
     memcpy(msgBuffer, packet->data, packet->len);
     msgBuffer[packet->len] = '\0'; // Ensure null termination
     
-    // Log raw telemetry frame (prefixed to distinguish from CSV output)
-    Serial.print("# RAW: ");
-    Serial.println(msgBuffer);
+    // Track the last packet ID we received to avoid processing duplicates
+    static uint16_t lastStatusPacketId = 0;
     
-    // Process and output as CSV
-    telemParser.processTelemetryFrame(msgBuffer);
-    
-    // Add RSSI information as comment for plotting tools
-    char buffer[64];
-    snprintf(buffer, sizeof(buffer), "# RSSI:%d,SNR:%.2f", 
-             loraManager.getLastRssi(), loraManager.getLastSnr());
-    Serial.println(buffer);
+    // Check if this is a status update packet (now used for heartbeat)
+    if (strncmp(msgBuffer, "<STATUS:", 8) == 0) {
+      // This is a status message that also serves as heartbeat
+      // The linkStatusChanged flag has already been set to update connection status
+      
+      // Only process each status packet once by tracking the packet ID
+      if (packet->id != lastStatusPacketId) {
+        lastStatusPacketId = packet->id;
+          // Extract the state from the status message for change detection
+        char extractedState[16] = "";
+        // Extract state name between STATUS: and first comma
+        const char* stateStart = msgBuffer + 8; // Skip "<STATUS:"
+        const char* stateEnd = strchr(stateStart, ',');
+        if (stateEnd != NULL) {
+          size_t stateLen = stateEnd - stateStart;
+          if (stateLen < sizeof(extractedState)) {
+            strncpy(extractedState, stateStart, stateLen);
+            extractedState[stateLen] = '\0';
+          }
+        }
+        
+        // Track state changes and always print them
+        static String lastState = "UNKNOWN";
+        if (strcmp(extractedState, lastState.c_str()) != 0) {
+          // State changed - always print this
+          Serial.print("# STATE CHANGE: ");
+          Serial.println(extractedState);
+          lastState = extractedState;
+        } else {
+          // Same state - print status messages but limit to once every 10 seconds to avoid log spam
+          static unsigned long lastStatusPrinted = 0;
+          unsigned long now = millis();
+          
+          if (now - lastStatusPrinted >= 10000) {
+            lastStatusPrinted = now;
+            
+            // Only occasionally show the status message
+            Serial.print("# STATUS: ");
+            Serial.println(msgBuffer);
+          }
+        }
+      }
+    } else if (strncmp(msgBuffer, "<HEARTBEAT:", 11) == 0) {
+      // Legacy heartbeat packet format (if any), don't print these
+      // The link status is already updated via linkStatusChanged flag
+    } else {
+      // Regular telemetry packet, process normally
+      // Log raw telemetry frame (prefixed to distinguish from CSV output)
+      Serial.print("# RAW: ");
+      Serial.println(msgBuffer);
+      
+      // Process and output as CSV
+      telemParser.processTelemetryFrame(msgBuffer);
+        
+      // Add RSSI information as comment for plotting tools
+      char buffer[64];
+      snprintf(buffer, sizeof(buffer), "# RSSI:%d,SNR:%.2f",
+               loraManager.getLastRssi(), loraManager.getLastSnr());
+      Serial.println(buffer);
+    }
   }
 }
 
@@ -167,6 +248,9 @@ void setup() {
     
     // Set the packet handler
     loraManager.onPacketReceived = handleLoraPacket;
+    
+    // Increase connection timeout to 30 seconds to prevent false disconnection reports
+    loraManager.setConnectionTimeout(30000);
   } else {
     Serial.println("<DEBUG:LORA_INIT_FAILED>");
     Serial.println("<STATUS:ERROR>");
@@ -190,57 +274,80 @@ void loop() {
     
     // Process queue (send pending packets, retry failed ones)
     loraManager.checkQueue();
+      // ===== LINK STATUS MANAGEMENT - SEPARATE FROM FC STATE STATUS =====
+    // Update link status in two cases:
+    // 1. When a packet is received (linkStatusChanged flag)
+    // 2. Periodically (every 10 seconds) to detect disconnections
     
-    // Periodic status updates (every 5 seconds)
-    static unsigned long lastStatusUpdate = 0;
-    if (now - lastStatusUpdate >= 5000) {
-      lastStatusUpdate = now;
-        // Show link status
-      if (loraManager.isInitialized()) {
-        // First check if we're connected to the FC
-        if (!loraManager.isConnected()) {
-          // Haven't received anything from FC within timeout period
-          Serial.println("<STATUS:LINK_DOWN,NO_CONNECTION>");
+    // Only attempt to evaluate link status if LoRa is initialized
+    if (loraManager.isInitialized()) {
+      // Update link status when:
+      // - We just received a packet (flagged by handleLoraPacket)
+      // - OR every 30 seconds as a periodic check (matching the FC timeout setting)
+      if (linkStatusChanged || (now - lastLinkStatusUpdate >= 30000)) {
+        lastLinkStatusUpdate = now;
+        linkStatusChanged = false;
+        
+        // Determine the current link status
+        String newLinkStatus;
+        bool isConnected = loraManager.isConnected();
+        
+        if (!isConnected) {
+          // No packets received within timeout period
+          newLinkStatus = "LINK_DOWN";
           heartbeat.setPattern(HB_ERROR); // Error pattern for no connection
         } else {
-          // We have a connection, evaluate its quality
+          // Evaluate link quality based on RSSI
           int16_t rssi = loraManager.getLastRssi();
-          float snr = loraManager.getLastSnr();
           
-          // Get packet statistics
-          uint16_t sent = loraManager.getPacketsSent();
-          uint16_t received = loraManager.getPacketsReceived();
-          uint16_t lost = loraManager.getPacketsLost();
-          float lossRate = loraManager.getPacketLossRate() * 100.0f; // Convert to percentage
-          
-          // Determine link quality
-          String linkQuality;
           if (rssi > -90) {
-            linkQuality = "EXCELLENT";
+            newLinkStatus = "LINK_EXCELLENT";
             heartbeat.setPattern(HB_IDLE); // Slow blink for good connection
           } else if (rssi > -100) {
-            linkQuality = "GOOD";
+            newLinkStatus = "LINK_GOOD"; 
             heartbeat.setPattern(HB_TEST); // Medium blink for OK connection
           } else if (rssi > -110) {
-            linkQuality = "FAIR";
+            newLinkStatus = "LINK_FAIR";
             heartbeat.setPattern(HB_ARMED); // Fast blink for poor connection
           } else {
-            linkQuality = "POOR";
+            newLinkStatus = "LINK_POOR";
             heartbeat.setPattern(HB_RECOVERY); // Very fast blink for bad connection
           }
-          
-          char buffer[128];
-          snprintf(buffer, sizeof(buffer), "<STATUS:LINK_%s,RSSI:%d,SNR:%.1f,PKT_SENT:%u,PKT_RECV:%u,LOSS:%.1f%%>", 
-                  linkQuality.c_str(), rssi, snr, sent, received, lossRate);
-          Serial.println(buffer);
         }
         
-        // Reset statistics every hour to avoid overflow
-        if (loraManager.getStatsDuration() > 3600000) {
-            loraManager.resetStats();
+        // Only print link status if it has changed
+        // (we no longer periodically print status - this is handled by the FC's status heartbeats)
+        if (newLinkStatus != currentLinkStatus) {
+          currentLinkStatus = newLinkStatus;
+          
+          // Format and print appropriate status message - prefixed with # for consistency
+          if (currentLinkStatus == "LINK_DOWN") {
+            Serial.println("# LINK STATUS: LINK_DOWN,NO_CONNECTION");
+          } else {
+            // We have a connection, get statistics
+            float snr = loraManager.getLastSnr();
+            uint16_t sent = loraManager.getPacketsSent();
+            uint16_t received = loraManager.getPacketsReceived();
+            uint16_t lost = loraManager.getPacketsLost();
+            float lossRate = loraManager.getPacketLossRate() * 100.0f; // Convert to percentage
+            
+            char buffer[128];
+            snprintf(buffer, sizeof(buffer), "# LINK STATUS: %s,RSSI:%d,SNR:%.1f,PKT_SENT:%u,PKT_RECV:%u,LOSS:%.1f%%", 
+                    currentLinkStatus.c_str(), loraManager.getLastRssi(), snr, sent, received, lossRate);
+            Serial.println(buffer);
+          }
         }
-      } else {
-        Serial.println("<STATUS:LINK_DOWN>");
+      }
+      
+      // Reset statistics every hour to avoid overflow
+      if (loraManager.getStatsDuration() > 3600000) {
+        loraManager.resetStats();
+      }
+    } else {
+      // Only report LoRa not initialized status when the status changes
+      if (currentLinkStatus != "LINK_NOT_INITIALIZED") {
+        currentLinkStatus = "LINK_NOT_INITIALIZED";
+        Serial.println("<STATUS:LINK_DOWN,NOT_INITIALIZED>");
         heartbeat.setPattern(HB_ERROR); // Error pattern for no connection
       }
     }

@@ -15,6 +15,7 @@
 #include "../include/fc/UartManager.h"
 #include "../include/fc/TelemManager.h" // Added TelemManager
 #include "../include/navc/Sensors.h" // For SensorPacket structure
+#include "../include/utils/PacketFlags.h" // For no-retry flag
 
 // Already defined in Heartbeat.h, no need to redefine here
 // Using PC13 directly as it's defined by the STM32 framework
@@ -151,44 +152,24 @@ void statusTask() {
   // Update state manager (check for auto transitions)
   stateManager.updateState();
   
-  // Periodic status updates at different rates based on state
-  unsigned long now = millis();
-  unsigned long interval;
+  // Only output state changes to the local serial port - regular status updates are handled by heartbeat
+  static SystemState lastReportedState = STATE_IDLE; // Initialize to IDLE instead of undefined STATE_UNKNOWN
+  SystemState currentState = stateManager.getCurrentState();
   
-  // Set status update interval based on state
-  switch (stateManager.getCurrentState()) {
-    case STATE_IDLE:
-      interval = 1000; // 1Hz in IDLE
-      break;
-    case STATE_TEST:
-      interval = 200;  // 5Hz in TEST
-      break;
-    case STATE_ARMED:
-      interval = 50;   // 20Hz in ARMED
-      break;
-    case STATE_RECOVERY:
-      interval = 1000; // 1Hz in RECOVERY
-      break;
-    default:
-      interval = 1000;
-  }
-    // Send status message if interval has passed
-  if (now - lastStatusUpdate >= interval) {
-    lastStatusUpdate = now;
+  // Only report status to serial when state changes
+  if (currentState != lastReportedState) {
+    lastReportedState = currentState;
     
-    // Send status message using FrameCodec
+    // Only send status message to local serial console, not over LoRa
     char statusBuffer[64];
     FrameCodec::formatStatus(statusBuffer, sizeof(statusBuffer), 
-                            stateManager.getStateString(), millis());
+                           stateManager.getStateString(), millis());
     Serial.println(statusBuffer);
     
-    // Also send status update over LoRa (at a lower rate to avoid congestion)
-    static uint8_t loraCounter = 0;
-    if (loraManager.isInitialized() && 
-        (loraCounter++ % 5 == 0 || // Every 5th update for IDLE/RECOVERY 
-         stateManager.getCurrentState() == STATE_ARMED)) { // Every update for ARMED
-      
-      loraManager.sendPacket(LORA_TYPE_TELEM, statusBuffer, strlen(statusBuffer));
+    // Reset telemetry state variables when changing states
+    // This prevents telemetryStarted/Stopped variables from keeping incorrect state
+    if (currentState != STATE_ARMED && currentState != STATE_RECOVERY) {
+      telemManager.stopTelemetry();
     }
   }
 }
@@ -323,10 +304,9 @@ void uartTask() {
     FrameCodec::formatDebug(errorBuffer, sizeof(errorBuffer), "PACKET_ERROR");
     Serial.println(errorBuffer);
   }
-  
-  // Periodically report UART packet statistics
+    // Periodically report UART packet statistics
   unsigned long now = millis();
-  if (now - lastNavcStatsReport >= 5000) { // Every 5 seconds
+  if (now - lastNavcStatsReport >= 30000) { // Every 30 seconds
     lastNavcStatsReport = now;
     
     // Format and send statistics
@@ -344,7 +324,7 @@ void uartTask() {
 
 void reportNavcStats() {
   unsigned long now = millis();
-  if (now - lastNavcStatsReport >= 5000) { // Every 5 seconds
+  if (now - lastNavcStatsReport >= 30000) { // Every 30 seconds
     lastNavcStatsReport = now;
     
     // Format and send statistics
@@ -362,16 +342,20 @@ void reportNavcStats() {
 
 // New function for telemetry task - handles telemetry scheduling and transmission
 void telemTask() {
-  // Only process telemetry when in ARMED state, as per architecture spec
+  // Only process telemetry when in appropriate states, as per architecture spec
   SystemState currentState = stateManager.getCurrentState();
+  
+  // Static variables to track state across function calls
+  static bool wasArmed = false;
+  static bool wasRecovery = false;
   
   // Check if we should process telemetry based on system state
   if (currentState == STATE_ARMED) {
     // If we just entered ARMED state, start telemetry
-    static bool telemetryStarted = false;
-    if (!telemetryStarted) {
+    if (!wasArmed) {
       telemManager.startTelemetry();
-      telemetryStarted = true;
+      wasArmed = true;
+      wasRecovery = false;
       
       char buffer[64];
       FrameCodec::formatDebug(buffer, sizeof(buffer), "TELEMETRY_STARTED_IN_ARMED");
@@ -424,13 +408,13 @@ void telemTask() {
       // Mark packet as processed (it will be overwritten by the next one)
       uartManager.markPacketProcessed();
     }
-  }   // If we're in RECOVERY state, send simplified recovery telemetry
+  }  // If we're in RECOVERY state, send simplified recovery telemetry
   else if (currentState == STATE_RECOVERY) {
     // RECOVERY telemetry should have GPS data only at 1Hz
-    static bool recoveryTelemetryStarted = false;
-    if (!recoveryTelemetryStarted) {
+    if (!wasRecovery) {
       telemManager.startTelemetry(); // This will initialize the telemetry system
-      recoveryTelemetryStarted = true;
+      wasRecovery = true;
+      wasArmed = false;
       
       char buffer[64];
       FrameCodec::formatDebug(buffer, sizeof(buffer), "RECOVERY_TELEMETRY_STARTED");
@@ -464,16 +448,16 @@ void telemTask() {
         uartManager.markPacketProcessed();
       }
     }
-  }
-  // If state changed to something other than ARMED, stop telemetry
+  }  // If state changed to something other than ARMED or RECOVERY, stop telemetry
   else {
-    static bool telemetryStopped = false;
-    if (!telemetryStopped && telemManager.isTelemetryActive()) {
+    // Only stop telemetry if we were previously in a telemetry-active state
+    if ((wasArmed || wasRecovery) && telemManager.isTelemetryActive()) {
       telemManager.stopTelemetry();
-      telemetryStopped = true;
+      wasArmed = false;
+      wasRecovery = false;
       
       char buffer[64];
-      FrameCodec::formatDebug(buffer, sizeof(buffer), "TELEMETRY_STOPPED_NOT_ARMED");
+      FrameCodec::formatDebug(buffer, sizeof(buffer), "TELEMETRY_STOPPED");
       Serial.println(buffer);
     }
   }
@@ -499,13 +483,15 @@ void setup() {
   // Initialize LoRa communication
   FrameCodec::formatDebug(buffer, sizeof(buffer), "INITIALIZING_LORA");
   Serial.println(buffer);
-  
-  if (loraManager.begin(LORA_FC_ADDR, LORA_GS_ADDR)) {
+    if (loraManager.begin(LORA_FC_ADDR, LORA_GS_ADDR)) {
     FrameCodec::formatDebug(buffer, sizeof(buffer), "LORA_INIT_SUCCESS");
     Serial.println(buffer);
     
     // Set the packet handler
     loraManager.onPacketReceived = handleLoraPacket;
+    
+    // Increase connection timeout to 30 seconds to prevent false disconnection reports
+    loraManager.setConnectionTimeout(30000);
   } else {
     FrameCodec::formatDebug(buffer, sizeof(buffer), "LORA_INIT_FAILED");
     Serial.println(buffer);
@@ -532,8 +518,7 @@ void loop() {
   // Process telemetry only when in appropriate states (ARMED/RECOVERY)
   // The telemTask function internally checks the state
   telemTask();
-  
-  // Process LoRa communication
+    // Process LoRa communication
   unsigned long now = millis();
   if (now - lastLoraCheck >= 10) { // Check LoRa every 10ms
     lastLoraCheck = now;
@@ -543,14 +528,38 @@ void loop() {
     
     // Process queue (send pending packets, retry failed ones)
     loraManager.checkQueue();
-    
-    // For more reliability, process the queue more frequently for ACKs when commands are being processed
+      // For more reliability, process the queue more frequently for ACKs when commands are being processed
     static unsigned long lastCommandTime = 0;
     const unsigned long commandProcessingWindow = 1000; // 1 second window after receiving a command
     
     if (now - lastCommandTime < commandProcessingWindow) {
       // We are in a post-command processing window, check queue more frequently
       loraManager.checkQueue();
+    }
+    
+    // Send periodic link heartbeat packets with status information (exactly once every 10 seconds)
+    // This ensures the GS knows we're still connected and provides status updates
+    // This is now the ONLY way status updates are sent periodically (regardless of state)
+    static unsigned long lastHeartbeatPacket = 0;
+    if (loraManager.isInitialized() && (now - lastHeartbeatPacket >= 10000)) {
+      // Use a specific timestamp to prevent sending the same heartbeat multiple times
+      unsigned long currentTime = millis();
+      lastHeartbeatPacket = currentTime;
+      
+      // Send status message as heartbeat packet with current state and uptime
+      // We set this as a non-ack packet to avoid retries (type 3 is telemetry - non-critical)
+      char heartbeatBuffer[64];
+      SystemState currentState = stateManager.getCurrentState();
+      FrameCodec::formatStatus(heartbeatBuffer, sizeof(heartbeatBuffer), 
+                             stateManager.getStateString(), currentTime);
+      
+      // Send as telemetry packet (will be recognized by the GS link status manager)
+      // Directly send the heartbeat packet without allowing retries
+      loraManager.sendPacket(LORA_TYPE_TELEM, heartbeatBuffer, strlen(heartbeatBuffer));
+      
+      // Log that we're sending a heartbeat, for debugging purposes
+      Serial.print("Sending heartbeat: ");
+      Serial.println(heartbeatBuffer);
     }
   }
   
