@@ -13,7 +13,6 @@
 #include "../include/fc/State.h"
 #include "../include/fc/CmdParser.h"
 #include "../include/fc/UartManager.h"
-#include "../include/fc/TelemManager.h" // Added TelemManager
 #include "../include/navc/Sensors.h" // For SensorPacket structure
 
 // Already defined in Heartbeat.h, no need to redefine here
@@ -25,7 +24,6 @@ StateManager stateManager;
 CmdParser cmdParser(stateManager);
 LoraManager loraManager;
 UartManager uartManager; // For binary packet reception from NAVC
-TelemManager telemManager; // For telemetry formatting and scheduling
 
 // Task scheduling variables
 unsigned long lastStatusUpdate = 0;
@@ -34,7 +32,6 @@ unsigned long lastLoraCheck = 0;
 unsigned long lastCommandTime = 0; // Used for optimizing command ACK processing
 unsigned long lastUartCheck = 0;   // For UART packet processing
 unsigned long lastNavcStatsReport = 0; // For reporting NAVC packet statistics
-unsigned long lastTelemRateAdjust = 0; // For adjusting telemetry rate based on RSSI
 
 void cmdTask() {
   // Process any incoming serial data (from USB-CDC) 
@@ -86,30 +83,6 @@ void cmdTask() {
           if (loraManager.isInitialized()) {
             loraManager.sendPacket(LORA_TYPE_CMD, buffer, strlen(buffer));
           }
-        }
-      }      // Only keep telem_status command for diagnostics
-      else if (cdcCmdBuffer.equals("<CMD:TELEM_STATUS>")) {
-        char buffer[128];
-        TelemState state = telemManager.getTelemState();
-        const char* stateStr = "";
-        SystemState sysState = stateManager.getCurrentState();
-        const char* sysStateStr = stateManager.getStateString();
-        
-        if (state == TELEM_OFF) stateStr = "OFF";
-        else if (state == TELEM_STANDARD) stateStr = "STANDARD";
-        else if (state == TELEM_LOW_BW) stateStr = "LOW_BW";
-        
-        snprintf(buffer, sizeof(buffer), 
-                "<CMD_ACK:OK:TELEM_STATUS,SYS_STATE:%s,TELEM_STATE:%s,RATE:%u,RSSI:%d>",
-                sysStateStr,
-                stateStr,
-                telemManager.getTelemetryRate(),
-                loraManager.getLastRssi());
-        Serial.println(buffer);
-        
-        // Send response to GS via LoRa
-        if (loraManager.isInitialized()) {
-          loraManager.sendPacket(LORA_TYPE_CMD, buffer, strlen(buffer));
         }
       }
       // Check if it's a command
@@ -172,7 +145,7 @@ void statusTask() {
     default:
       interval = 1000;
   }
-    // Send status message if interval has passed
+    // Send status update if interval has passed
   if (now - lastStatusUpdate >= interval) {
     lastStatusUpdate = now;
     
@@ -342,143 +315,6 @@ void uartTask() {
   }
 }
 
-void reportNavcStats() {
-  unsigned long now = millis();
-  if (now - lastNavcStatsReport >= 5000) { // Every 5 seconds
-    lastNavcStatsReport = now;
-    
-    // Format and send statistics
-    char statsBuffer[128];
-    snprintf(statsBuffer, sizeof(statsBuffer),
-             "<DEBUG:NAVC_STATS,RECV:%lu,DROPS:%lu,ERRS:%lu,RATE:%.2f,LAST:%lu>",
-             uartManager.getPacketsReceived(),
-             uartManager.getPacketsDropped(),
-             uartManager.getCrcErrors(),
-             uartManager.getPacketRate(),
-             uartManager.getTimeSinceLastPacket());
-    Serial.println(statsBuffer);
-  }
-}
-
-// New function for telemetry task - handles telemetry scheduling and transmission
-void telemTask() {
-  // Only process telemetry when in ARMED state, as per architecture spec
-  SystemState currentState = stateManager.getCurrentState();
-  
-  // Check if we should process telemetry based on system state
-  if (currentState == STATE_ARMED) {
-    // If we just entered ARMED state, start telemetry
-    static bool telemetryStarted = false;
-    if (!telemetryStarted) {
-      telemManager.startTelemetry();
-      telemetryStarted = true;
-      
-      char buffer[64];
-      FrameCodec::formatDebug(buffer, sizeof(buffer), "TELEMETRY_STARTED_IN_ARMED");
-      Serial.println(buffer);
-    }
-    
-    // Adjust telemetry rate based on LoRa RSSI periodically
-    unsigned long now = millis();
-    if (now - lastTelemRateAdjust >= 2000) { // Check every 2 seconds
-      lastTelemRateAdjust = now;
-      
-      if (loraManager.isInitialized()) {
-        telemManager.adjustTelemRate(loraManager.getLastRssi());
-        
-        // For debugging, report rate changes
-        static TelemState lastReportedState = TELEM_OFF;
-        TelemState currentState = telemManager.getTelemState();
-        
-        if (currentState != lastReportedState) {
-          char buffer[128];
-          if (currentState == TELEM_STANDARD) {
-            snprintf(buffer, sizeof(buffer), "<DEBUG:TELEM_RATE:STANDARD,%dHz,RSSI:%d>", 
-                    telemManager.getTelemetryRate(), loraManager.getLastRssi());
-          } else if (currentState == TELEM_LOW_BW) {
-            snprintf(buffer, sizeof(buffer), "<DEBUG:TELEM_RATE:LOW_BW,%dHz,RSSI:%d>", 
-                    telemManager.getTelemetryRate(), loraManager.getLastRssi());
-          } else {
-            snprintf(buffer, sizeof(buffer), "<DEBUG:TELEM_STOPPED>");
-          }
-          Serial.println(buffer);
-          lastReportedState = currentState;
-        }
-      }
-    }
-    
-    // Check if it's time to send a telemetry packet
-    if (telemManager.update() && uartManager.isPacketReady()) {
-      // Get the latest sensor packet
-      const SensorPacket& packet = uartManager.getLatestPacket();
-      
-      // Format telemetry as ASCII frame
-      char telemBuffer[LORA_MAX_PACKET_SIZE];
-      telemManager.formatTelem(telemBuffer, sizeof(telemBuffer), packet);
-      
-      // Send over LoRa
-      if (loraManager.isInitialized()) {
-        loraManager.sendPacket(LORA_TYPE_TELEM, telemBuffer, strlen(telemBuffer));
-      }
-      
-      // Mark packet as processed (it will be overwritten by the next one)
-      uartManager.markPacketProcessed();
-    }
-  }   // If we're in RECOVERY state, send simplified recovery telemetry
-  else if (currentState == STATE_RECOVERY) {
-    // RECOVERY telemetry should have GPS data only at 1Hz
-    static bool recoveryTelemetryStarted = false;
-    if (!recoveryTelemetryStarted) {
-      telemManager.startTelemetry(); // This will initialize the telemetry system
-      recoveryTelemetryStarted = true;
-      
-      char buffer[64];
-      FrameCodec::formatDebug(buffer, sizeof(buffer), "RECOVERY_TELEMETRY_STARTED");
-      Serial.println(buffer);
-    }
-    
-    // Override telemetry rate to 1Hz for recovery
-    static unsigned long lastRecoveryTelem = 0;
-    unsigned long now = millis();
-    
-    if (now - lastRecoveryTelem >= 1000) { // 1Hz rate for recovery
-      lastRecoveryTelem = now;
-      
-      if (uartManager.isPacketReady()) {
-        // Get the latest sensor packet
-        const SensorPacket& packet = uartManager.getLatestPacket();
-        
-        // Format recovery telemetry (GPS only)
-        char telemBuffer[LORA_MAX_PACKET_SIZE];
-        FrameCodec::formatRecoveryTelemetry(
-          telemBuffer, sizeof(telemBuffer),
-          packet.timestamp, packet.latitude, packet.longitude, packet.altitude
-        );
-        
-        // Send over LoRa
-        if (loraManager.isInitialized()) {
-          loraManager.sendPacket(LORA_TYPE_TELEM, telemBuffer, strlen(telemBuffer));
-        }
-        
-        // Mark packet as processed (it will be overwritten by the next one)
-        uartManager.markPacketProcessed();
-      }
-    }
-  }
-  // If state changed to something other than ARMED, stop telemetry
-  else {
-    static bool telemetryStopped = false;
-    if (!telemetryStopped && telemManager.isTelemetryActive()) {
-      telemManager.stopTelemetry();
-      telemetryStopped = true;
-      
-      char buffer[64];
-      FrameCodec::formatDebug(buffer, sizeof(buffer), "TELEMETRY_STOPPED_NOT_ARMED");
-      Serial.println(buffer);
-    }
-  }
-}
-
 void setup() {
   // Initialize serial communication for debug
   Serial.begin(921600); // FC uses a higher baud rate for USB-CDC
@@ -528,10 +364,6 @@ void loop() {
   
   // Process UART communication with NAVC (high priority, check every loop iteration)
   uartTask();
-  
-  // Process telemetry only when in appropriate states (ARMED/RECOVERY)
-  // The telemTask function internally checks the state
-  telemTask();
   
   // Process LoRa communication
   unsigned long now = millis();

@@ -10,12 +10,10 @@
 #include "../include/utils/FrameCodec.h"
 #include "../include/utils/LoraManager.h"
 #include "../include/config/lora.h"
-#include "../include/gs/TelemParser.h" // Added TelemParser
 
 // Global objects
 HeartbeatManager heartbeat(PC13);
 LoraManager loraManager;
-TelemParser telemParser;
 
 // Variables for command handling
 char cmdBuffer[LORA_MAX_PACKET_SIZE];
@@ -44,23 +42,12 @@ void handleLoraPacket(LoraPacket* packet) {
     Serial.println(buffer);
   }
   else if (packet->type == LORA_TYPE_TELEM) {
-    // Telemetry from FC - process with TelemParser
+    // Telemetry from FC - forward to Serial
     char msgBuffer[LORA_MAX_PACKET_SIZE + 1]; // +1 for null terminator
     memcpy(msgBuffer, packet->data, packet->len);
     msgBuffer[packet->len] = '\0'; // Ensure null termination
     
-    // Log raw telemetry frame (prefixed to distinguish from CSV output)
-    Serial.print("# RAW: ");
     Serial.println(msgBuffer);
-    
-    // Process and output as CSV
-    telemParser.processTelemetryFrame(msgBuffer);
-    
-    // Add RSSI information as comment for plotting tools
-    char buffer[64];
-    snprintf(buffer, sizeof(buffer), "# RSSI:%d,SNR:%.2f", 
-             loraManager.getLastRssi(), loraManager.getLastSnr());
-    Serial.println(buffer);
   }
 }
 
