@@ -7,6 +7,10 @@
 
 #include "../include/fc/State.h"
 #include "../include/utils/FrameCodec.h"
+#include "../include/fc/TelemManager.h"  // Include TelemManager header
+
+// Reference to the telemetry manager defined in FC.cpp
+extern TelemManager telemManager;
 
 StateManager::StateManager() : 
     currentState(STATE_IDLE), 
@@ -71,13 +75,37 @@ bool StateManager::changeState(SystemState newState) {
                  
         char buffer[64];
         FrameCodec::formatDebug(buffer, sizeof(buffer), debugMsg);
-        Serial.println(buffer);
-        
-        // If entering ARMED state, record timestamp
+        Serial.println(buffer);        // If entering ARMED state, record timestamp and start telemetry
         if (newState == STATE_ARMED) {
             armedTimestamp = millis();
             lastMotionTimestamp = millis();
             inMotion = false;
+            
+            // Start telemetry as we enter ARMED state
+            telemManager.startTelemetry();
+            
+            char telemMsg[64];
+            FrameCodec::formatDebug(telemMsg, sizeof(telemMsg), "TELEMETRY_STARTED_WITH_ARM");
+            Serial.println(telemMsg);
+        }
+        
+        // If entering RECOVERY state from ARMED
+        if (oldState == STATE_ARMED && newState == STATE_RECOVERY) {
+            // The telemTask will handle starting recovery mode telemetry
+            char recMsg[64];
+            FrameCodec::formatDebug(recMsg, sizeof(recMsg), "ENTERING_RECOVERY_MODE");
+            Serial.println(recMsg);
+        }
+        
+        // If leaving ARMED or RECOVERY state to any other state, stop telemetry
+        if ((oldState == STATE_ARMED || oldState == STATE_RECOVERY) && 
+            (newState != STATE_ARMED && newState != STATE_RECOVERY)) {
+            // Stop telemetry when leaving ARMED or RECOVERY state
+            telemManager.stopTelemetry();
+            
+            char telemMsg[64];
+            FrameCodec::formatDebug(telemMsg, sizeof(telemMsg), "TELEMETRY_STOPPED_WITH_STATE_CHANGE");
+            Serial.println(telemMsg);
         }
     }
     
