@@ -158,11 +158,11 @@ bool LoraManager::sendPacket(uint8_t type, const char* data, size_t len) {
     // Copy data, ensuring we don't overflow
     size_t copyLen = min(len, sizeof(packet.data));
     memcpy(packet.data, data, copyLen);
-    packet.len = copyLen;
-      // Add to queue
+    packet.len = copyLen;    // Add to queue
     memcpy(&outQueue[slot], &packet, sizeof(packet));
     queueActive[slot] = true;
-    queueRetries[slot] = (type == LORA_TYPE_STATUS) ? LORA_MAX_RETRIES : 0;
+    // Initialize retry counter to 0
+    queueRetries[slot] = 0;
     queueRetryTime[slot] = millis(); // Send immediately
     
     return true;
@@ -247,23 +247,21 @@ void LoraManager::checkQueue() {
                 snprintf(logBuffer, sizeof(logBuffer), "LoRa TX: type=%d, id=%d, retry=%d", 
                         outQueue[i].type, outQueue[i].id, queueRetries[i]);
                 Serial.println(logBuffer);
-                
-                // Handle transmission result
+                  // Handle transmission result
                 if (state == RADIOLIB_ERR_NONE) {
-                    if (outQueue[i].type == LORA_TYPE_ACK) {
-                        // No need to wait for ACK on ACKs, remove from queue
+                    // Different handling based on packet type
+                    if (outQueue[i].type == LORA_TYPE_ACK || outQueue[i].type == LORA_TYPE_STATUS) {
+                        // No need to wait for ACKs on ACK packets or STATUS messages, remove from queue
                         queueActive[i] = false;
                     } else {
-                        // Increment retry count and set next retry time
-                        queueRetries[i]++;
-                          // Special handling for commands (try more times for critical commands)
+                        // For all other packet types, handle retries
                         int maxRetries = LORA_MAX_RETRIES;
                         
                         // If this is a DISARM command, try even harder (more retries)
                         if (outQueue[i].type == LORA_TYPE_CMD && 
                             outQueue[i].len >= 11 && // Length check to avoid buffer overruns
                             memcmp(outQueue[i].data, "<CMD:DISARM", 11) == 0) {
-                            maxRetries = LORA_MAX_RETRIES + 1; // One extra try for safety critical commands
+                            maxRetries = LORA_MAX_RETRIES + 2; // Two extra tries for safety critical commands
                         }
                         
                         // If max retries reached, remove from queue
@@ -271,12 +269,12 @@ void LoraManager::checkQueue() {
                             queueActive[i] = false;
                             Serial.println("LoRa TX: Max retries reached, dropping packet");
                             
-                            // Update packet loss statistics (only for non-ACK packets)
-                            if (outQueue[i].type != LORA_TYPE_ACK) {
-                                packetsLost++;
-                            }
+                            // Update packet loss statistics
+                            packetsLost++;
                         } else {
-                            // Exponential backoff for retries
+                            // Set next retry time with exponential backoff
+                            // First transmit was already done, increment retry counter for next attempt
+                            queueRetries[i]++;
                             queueRetryTime[i] = now + LORA_RETRY_BASE_MS * (1 << queueRetries[i]);
                         }
                     }

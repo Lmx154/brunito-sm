@@ -166,14 +166,16 @@ void setup() {
 void loop() {
   // Process any incoming serial data
   processSerialInput();
-  
-  // Process LoRa communication
+    // Process LoRa communication
   unsigned long now = millis();
   if (now - lastLoraCheck >= 10) { // Check LoRa every 10ms
     lastLoraCheck = now;
     
-    // Check for received packets
+    // Check for received packets first - this gives us a chance to process ACKs
     loraManager.checkReceived();
+    
+    // Give a small delay to allow for ACK processing
+    delay(5);
     
     // Process queue (send pending packets, retry failed ones)
     loraManager.checkQueue();
