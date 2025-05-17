@@ -11,7 +11,6 @@
 #include <Arduino.h>
 #include <RadioLib.h>
 #include "../config/lora.h"
-#include "PacketFlags.h" // For special packet flags
 
 // Forward declaration
 class LoraManager;
