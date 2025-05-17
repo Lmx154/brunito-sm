@@ -160,8 +160,11 @@ bool LoraManager::sendPacket(uint8_t type, const char* data, size_t len) {
     packet.len = copyLen;    // Add to queue
     memcpy(&outQueue[slot], &packet, sizeof(packet));
     queueActive[slot] = true;
-    // Initialize retry counter to 0
-    queueRetries[slot] = 0;
+    
+    // Set retry behavior based on packet type
+    // STATUS packets (fire-and-forget): no retries (0)
+    // Other packets: normal retry behavior (LORA_MAX_RETRIES)
+    queueRetries[slot] = (type == LORA_TYPE_STATUS) ? 0 : LORA_MAX_RETRIES;
     queueRetryTime[slot] = millis(); // Send immediately
     
     return true;
@@ -247,10 +250,9 @@ void LoraManager::checkQueue() {
                         outQueue[i].type, outQueue[i].id, queueRetries[i]);
                 Serial.println(logBuffer);
                   // Handle transmission result
-                if (state == RADIOLIB_ERR_NONE) {
-                    // Different handling based on packet type
+                if (state == RADIOLIB_ERR_NONE) {                // Different handling based on packet type
                     if (outQueue[i].type == LORA_TYPE_ACK || outQueue[i].type == LORA_TYPE_STATUS) {
-                        // No need to wait for ACKs on ACK packets or STATUS messages, remove from queue
+                        // No need to wait for ACKs on ACK packets or STATUS messages, remove from queue immediately
                         queueActive[i] = false;
                     } else {
                         // For all other packet types, handle retries

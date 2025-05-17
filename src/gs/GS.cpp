@@ -49,6 +49,14 @@ void handleLoraPacket(LoraPacket* packet) {
     
     Serial.println(msgBuffer);
   }
+  else if (packet->type == LORA_TYPE_STATUS) {
+    // Status messages from FC - forward to Serial
+    char msgBuffer[LORA_MAX_PACKET_SIZE + 1]; // +1 for null terminator
+    memcpy(msgBuffer, packet->data, packet->len);
+    msgBuffer[packet->len] = '\0'; // Ensure null termination
+    
+    Serial.println(msgBuffer);
+  }
 }
 
 // Process serial input
@@ -145,18 +153,16 @@ void setup() {
   Serial.println("\n<DEBUG:GS_INIT>");
   printHelp();
   
-  // Initialize LoRa communication
-  Serial.println("<DEBUG:INITIALIZING_LORA>");
-  
+  // Initialize LoRa communication  Serial.println("<DEBUG:INITIALIZING_LORA>");
   if (loraManager.begin(LORA_GS_ADDR, LORA_FC_ADDR)) {
     Serial.println("<DEBUG:LORA_INIT_SUCCESS>");
-    Serial.println("<STATUS:READY>");
+    Serial.println("<GS_LINK:READY>");
     
     // Set the packet handler
     loraManager.onPacketReceived = handleLoraPacket;
   } else {
     Serial.println("<DEBUG:LORA_INIT_FAILED>");
-    Serial.println("<STATUS:ERROR>");
+    Serial.println("<GS_LINK:ERROR>");
     
     // Set error pattern on LED
     heartbeat.setPattern(HB_ERROR);
@@ -166,7 +172,8 @@ void setup() {
 void loop() {
   // Process any incoming serial data
   processSerialInput();
-    // Process LoRa communication
+  
+  // Process LoRa communication
   unsigned long now = millis();
   if (now - lastLoraCheck >= 10) { // Check LoRa every 10ms
     lastLoraCheck = now;
@@ -180,16 +187,17 @@ void loop() {
     // Process queue (send pending packets, retry failed ones)
     loraManager.checkQueue();
     
-    // Periodic status updates (every 5 seconds)
+    // Periodic status updates less frequently to avoid duplicates (every 30 seconds)
     static unsigned long lastStatusUpdate = 0;
-    if (now - lastStatusUpdate >= 5000) {
+    if (now - lastStatusUpdate >= 30000) {
       lastStatusUpdate = now;
-        // Show link status
+      
+      // Show link status
       if (loraManager.isInitialized()) {
         // First check if we're connected to the FC
         if (!loraManager.isConnected()) {
           // Haven't received anything from FC within timeout period
-          Serial.println("<STATUS:LINK_DOWN,NO_CONNECTION>");
+          Serial.println("<GS_LINK:DOWN,NO_CONNECTION>");
           heartbeat.setPattern(HB_ERROR); // Error pattern for no connection
         } else {
           // We have a connection, evaluate its quality
@@ -219,17 +227,17 @@ void loop() {
           }
           
           char buffer[128];
-          snprintf(buffer, sizeof(buffer), "<STATUS:LINK_%s,RSSI:%d,SNR:%.1f,PKT_SENT:%u,PKT_RECV:%u,LOSS:%.1f%%>", 
+          snprintf(buffer, sizeof(buffer), "<GS_LINK:%s,RSSI:%d,SNR:%.1f,PKT_SENT:%u,PKT_RECV:%u,LOSS:%.1f%%>", 
                   linkQuality.c_str(), rssi, snr, sent, received, lossRate);
           Serial.println(buffer);
-        }
-        
-        // Reset statistics every hour to avoid overflow
-        if (loraManager.getStatsDuration() > 3600000) {
+          
+          // Reset statistics every hour to avoid overflow
+          if (loraManager.getStatsDuration() > 3600000) {
             loraManager.resetStats();
+          }
         }
       } else {
-        Serial.println("<STATUS:LINK_DOWN>");
+        Serial.println("<GS_LINK:DOWN>");
         heartbeat.setPattern(HB_ERROR); // Error pattern for no connection
       }
     }
