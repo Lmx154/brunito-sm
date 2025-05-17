@@ -36,13 +36,12 @@ LoraManager::LoraManager() :
     rxPacketId(0),
     initialized(false),
     rssi(0),
-    snr(0),
-    packetsSent(0),
+    snr(0),    packetsSent(0),
     packetsReceived(0),
     packetsLost(0),
     lastStatsResetTime(0),
     lastReceivedTime(0),
-    connectionTimeout(5000) // Default timeout of 5 seconds
+    connectionTimeout(15000) // Default timeout of 15 seconds (1.5x the STATUS_PERIOD_MS)
 {
     // Initialize queue
     for (int i = 0; i < QUEUE_SIZE; i++) {
@@ -347,13 +346,12 @@ void LoraManager::processIncomingPacket(LoraPacket* packet) {
             
             // No ACK needed for telemetry
             break;
-            
-        case LORA_TYPE_STATUS:
+              case LORA_TYPE_STATUS:
             // Forward to callback, but never ACK
             if (onPacketReceived) {
                 onPacketReceived(packet);
             }
-            return;   // nothing else
+            break;   // continue with function
         
         case LORA_TYPE_SETTINGS:
             // Apply LoRa settings from packet
