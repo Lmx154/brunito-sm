@@ -33,6 +33,11 @@ unsigned long lastLoraCheck = 0;
 unsigned long lastCommandTime = 0; // Used for optimizing command ACK processing
 unsigned long lastUartCheck = 0;   // For UART packet processing
 unsigned long lastNavcStatsReport = 0; // For reporting NAVC packet statistics
+unsigned long lastLoraLinkReport = 0; // For reporting LoRa link quality
+static const uint32_t LORA_LINK_REPORT_PERIOD_MS = 30'000;   // 30 seconds, same as GS
+
+// Forward declarations
+void reportLoraLinkStatus();
 
 void cmdTask() {
   // Process any incoming serial data (from USB-CDC) 
@@ -65,10 +70,13 @@ void cmdTask() {
             loraManager.sendPacket(LORA_TYPE_CMD, "<CMD_ACK:OK:LORA_STATS_RESET>", 30);
           }
         }
-      }
-      // Check for LoRa stats command
+      }      // Check for LoRa stats command
       else if (cdcCmdBuffer.equals("<CMD:LORA_STATS>")) {
         if (loraManager.isInitialized()) {
+          // Simply call our reportLoraLinkStatus function for consistent formatting
+          reportLoraLinkStatus();
+          
+          // Also create a separate message just for the GS
           char buffer[128];
           snprintf(buffer, sizeof(buffer), 
                   "<CMD_ACK:OK:LORA_STATS,RSSI:%d,SNR:%.1f,TX:%u,RX:%u,LOST:%u,LOSS:%.1f%%>",
@@ -78,9 +86,8 @@ void cmdTask() {
                   loraManager.getPacketsReceived(),
                   loraManager.getPacketsLost(),
                   loraManager.getPacketLossRate() * 100.0f);
-          Serial.println(buffer);
           
-          // Also send to GS
+          // Send to GS
           if (loraManager.isInitialized()) {
             loraManager.sendPacket(LORA_TYPE_CMD, buffer, strlen(buffer));
           }
@@ -161,6 +168,63 @@ void updateHeartbeatPattern() {
       break;
     default:
       heartbeat.setPattern(HB_ERROR);
+  }
+}
+
+// Report LoRa link status similar to GS format
+void reportLoraLinkStatus() {
+  if (!loraManager.isInitialized()) {
+    Serial.println("<FC_LINK:DOWN,NOT_INITIALIZED>");
+    return;
+  }
+  
+  // Get packet statistics
+  uint16_t sent = loraManager.getPacketsSent();
+  uint16_t received = loraManager.getPacketsReceived();
+  uint16_t lost = loraManager.getPacketsLost();
+  float lossRate = loraManager.getPacketLossRate() * 100.0f; // Convert to percentage
+  
+  // Get RF quality metrics
+  int16_t rssi = loraManager.getLastRssi();
+  float snr = loraManager.getLastSnr();
+  
+  // Get timing data
+  uint32_t timeSinceLastRx = loraManager.getTimeSinceLastRx();
+  uint32_t statsDuration = loraManager.getStatsDuration();
+  
+  // Determine link quality based on RSSI
+  String linkQuality;
+  if (!loraManager.isConnected()) {
+    linkQuality = "DOWN";
+  } else if (rssi > -90) {
+    linkQuality = "EXCELLENT";
+  } else if (rssi > -100) {
+    linkQuality = "GOOD";
+  } else if (rssi > -110) {
+    linkQuality = "FAIR";
+  } else {
+    linkQuality = "POOR";
+  }
+    // Format and send link status
+  char buffer[128];
+  
+  // Check if SNR value is valid (RFM95 returns 0 SNR when no packets received)
+  if (received > 0 && snr != 0) {
+    snprintf(buffer, sizeof(buffer), 
+            "<FC_LINK:%s,RSSI:%d,SNR:%.1f,PKT_SENT:%u,PKT_RECV:%u,LOSS:%.1f%%,LAST_RX:%lums>", 
+            linkQuality.c_str(), rssi, snr, sent, received, lossRate, timeSinceLastRx);
+  } else {
+    // No valid SNR, omit it from output
+    snprintf(buffer, sizeof(buffer), 
+            "<FC_LINK:%s,RSSI:%d,PKT_SENT:%u,PKT_RECV:%u,LOSS:%.1f%%,LAST_RX:%lums>", 
+            linkQuality.c_str(), rssi, sent, received, lossRate, timeSinceLastRx);
+  }
+  Serial.println(buffer);
+  
+  // Reset statistics every hour to avoid overflow
+  if (statsDuration > 3600000) {
+    loraManager.resetStats();
+    Serial.println("<DEBUG:LORA_STATS_AUTO_RESET>");
   }
 }
 
@@ -274,21 +338,46 @@ void uartTask() {
     FrameCodec::formatDebug(errorBuffer, sizeof(errorBuffer), "PACKET_ERROR");
     Serial.println(errorBuffer);
   }
-  
-  // Periodically report UART packet statistics
+    // Periodically report UART packet statistics
   unsigned long now = millis();
   if (now - lastNavcStatsReport >= 5000) { // Every 5 seconds
     lastNavcStatsReport = now;
     
     // Format and send statistics
     char statsBuffer[128];
+      // Determine NAVC link status based on time since last packet
+    String linkStatus = "DOWN";
+    unsigned long timeSinceLastPacket = uartManager.getTimeSinceLastPacket();
+    if (timeSinceLastPacket < 1000) {
+      linkStatus = "EXCELLENT";
+    } else if (timeSinceLastPacket < 3000) {
+      linkStatus = "GOOD";
+    } else if (timeSinceLastPacket < 5000) {
+      linkStatus = "FAIR";
+    } else if (uartManager.getPacketsReceived() > 0) {
+      linkStatus = "POOR";
+    }
+    
+    // Use the packet rate to determine health percentage
+    float packetRateHz = uartManager.getPacketRate();
+    float healthPct = 100.0f;
+    
+    if (packetRateHz > 0) {
+      // Expected rate is typically ~10Hz for NAVC
+      healthPct = min(100.0f, (packetRateHz / 10.0f) * 100.0f);
+    } else if (timeSinceLastPacket > 5000) {
+      healthPct = 0.0f;
+    }
+    
     snprintf(statsBuffer, sizeof(statsBuffer),
-             "<DEBUG:NAVC_STATS,RECV:%lu,DROPS:%lu,ERRS:%lu,RATE:%.2f,LAST:%lu>",
+             "<NAVC_LINK:%s,HEALTH:%.1f%%,RECV:%lu,DROPS:%lu,ERRS:%lu,RATE:%.2f,LAST:%lums>",
+             linkStatus.c_str(),
+             healthPct,
              uartManager.getPacketsReceived(),
              uartManager.getPacketsDropped(),
              uartManager.getCrcErrors(),
-             uartManager.getPacketRate(),
-             uartManager.getTimeSinceLastPacket());
+             packetRateHz,
+             timeSinceLastPacket);
     Serial.println(statsBuffer);
   }
 }
@@ -301,6 +390,9 @@ void setup() {
   Serial2.begin(115200);
   Serial2.setRx(PA2);
   Serial2.setTx(PA3);
+  
+  // Initialize report timers
+  lastLoraLinkReport = millis(); // Initialize link report timer
   
   // Send initialization messages using FrameCodec
   char buffer[64];
@@ -361,6 +453,12 @@ void loop() {
     if (now - lastCommandTime < commandProcessingWindow) {
       // We are in a post-command processing window, check queue more frequently
       loraManager.checkQueue();
+    }
+    
+    // Periodically report LoRa link status (every 30 seconds)
+    if (now - lastLoraLinkReport >= LORA_LINK_REPORT_PERIOD_MS) {
+      lastLoraLinkReport = now;
+      reportLoraLinkStatus();
     }
   }
   
