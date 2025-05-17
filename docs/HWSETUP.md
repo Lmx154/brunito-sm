@@ -1,8 +1,8 @@
-# Brunito Project Details (Updated with PlatformIO Configuration)
+# B.R.U.N.O Project Details (Updated with PlatformIO Configuration)
 
 ## Overview
 
-The **Brunito** project comprises three STM32F401CCU6-based modules:
+The **B.R.U.N.O** project comprises three STM32F401CCU6-based modules:
 
 * **NAVC (Navigation & Autonomous Vehicle Computer)**
 * **FC (Flight Computer)**
