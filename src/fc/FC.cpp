@@ -56,26 +56,34 @@ void reinitializeUart();
  * @return Formatted ASCII telemetry string
  */
 String formatTelem(const SensorPacket& packet, bool gpsOnly) {
-  char buffer[200];
+  char buffer[250];
+  
+  // Format date and time into a readable format: YYYY-MM-DD HH:MM:SS
+  char dateTimeStr[20];
+  snprintf(dateTimeStr, sizeof(dateTimeStr), "20%02d-%02d-%02d %02d:%02d:%02d",
+           packet.year, packet.month, packet.day, 
+           packet.hour, packet.minute, packet.second);
   
   if (gpsOnly) {
-    // RECOVERY mode - GPS only telemetry
-    snprintf(buffer, sizeof(buffer), "<TELEM:%lu,%ld,%ld,%ld>", 
-             packet.timestamp, 
+    // RECOVERY mode - GPS only telemetry with RTC and satellite count
+    snprintf(buffer, sizeof(buffer), "<TELEM:TIME=%s,SAT=%u,LAT=%ld,LON=%ld,ALT=%ld>", 
+             dateTimeStr,
+             packet.satellites,
              packet.latitude, 
              packet.longitude, 
              packet.altitude);
   } else {
-    // ARMED mode - Full telemetry
-    snprintf(buffer, sizeof(buffer), "<TELEM:%u,%lu,%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld>",
-             packet.packetId, 
-             packet.timestamp, 
-             packet.altitude, 
+    // ARMED mode - Full telemetry with formatted field names for readability
+    snprintf(buffer, sizeof(buffer), 
+             "<TELEM:ID=%u,TIME=%s,SAT=%u,ALT=%ld,ACCEL=%d,%d,%d,GYRO=%d,%d,%d,MAG=%d,%d,%d,GPS=%ld,%ld>",
+             packet.packetId,
+             dateTimeStr,
+             packet.satellites,
+             packet.altitude,
              packet.accelX, packet.accelY, packet.accelZ,
              packet.gyroX, packet.gyroY, packet.gyroZ,
              packet.magX, packet.magY, packet.magZ,
-             packet.latitude, 
-             packet.longitude);
+             packet.latitude, packet.longitude);
   }
   
   return String(buffer);

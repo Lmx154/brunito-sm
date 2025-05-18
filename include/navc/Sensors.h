@@ -34,6 +34,13 @@ typedef struct {
     int16_t magZ;
     int32_t latitude;    // Latitude in 1e-7 degrees
     int32_t longitude;   // Longitude in 1e-7 degrees
+    uint8_t year;        // Last two digits of year (e.g., 25 for 2025)
+    uint8_t month;       // Month (1-12)
+    uint8_t day;         // Day (1-31)
+    uint8_t hour;        // Hour (0-23)
+    uint8_t minute;      // Minute (0-59)
+    uint8_t second;      // Second (0-59)
+    uint8_t satellites;  // Number of GPS satellites
     uint16_t crc16;      // CRC-16 checksum
 } __attribute__((packed)) SensorPacket;
 
@@ -64,6 +71,14 @@ private:
     float temperature;   // in °C
     float pressure;      // in Pa
     float altitude;      // in m
+    
+    // RTC data
+    uint8_t rtcYear;     // Last two digits of year
+    uint8_t rtcMonth;    // Month (1-12)
+    uint8_t rtcDay;      // Day (1-31)
+    uint8_t rtcHour;     // Hour (0-23)
+    uint8_t rtcMinute;   // Minute (0-59)
+    uint8_t rtcSecond;   // Second (0-59)
     
     // Timing variables
     unsigned long lastSampleTime;
