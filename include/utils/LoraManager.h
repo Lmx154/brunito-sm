@@ -62,9 +62,14 @@ private:
     uint16_t packetsSent;
     uint16_t packetsReceived;
     uint16_t packetsLost;
-    uint32_t lastStatsResetTime;
-    uint32_t lastReceivedTime;   // Timestamp of last received packet from target
+    uint32_t lastStatsResetTime;    uint32_t lastReceivedTime;   // Timestamp of last received packet from target
     uint32_t connectionTimeout;  // Time in ms after which connection is considered lost
+    
+    // Link quality assessment through ping/pong
+    bool pingEnabled;            // Whether ping mechanism is enabled
+    uint32_t lastPingTime;       // Last time we sent a ping
+    uint32_t lastPongTime;       // Last time we received a pong
+    uint32_t pingInterval;       // How often to send pings (ms)
       // Methods for packet handling
     bool encodePacket(LoraPacket* packet, uint8_t* buffer, size_t* size);
     bool decodePacket(uint8_t* buffer, size_t size, LoraPacket* packet);
@@ -92,11 +97,17 @@ public:
     int16_t getLastRssi() const { return rssi; }
     float getLastSnr() const { return snr; }
     bool isInitialized() const { return initialized; }
-    
-    // Connection status
-    bool isConnected() const { return (millis() - lastReceivedTime) < connectionTimeout; }
+      // Connection status
+    bool isConnected() const;  // Implementation in cpp file
     void setConnectionTimeout(uint32_t timeoutMs) { connectionTimeout = timeoutMs; }
     uint32_t getTimeSinceLastRx() const { return millis() - lastReceivedTime; }
+    
+    // Link quality assessment - considers RSSI, SNR, and ping responses
+    bool isPingEnabled() const { return pingEnabled; }
+    void enablePing(bool enable) { pingEnabled = enable; }
+    void sendPing();
+    uint32_t getLastPingTime() const { return lastPingTime; }
+    uint32_t getLastPongTime() const { return lastPongTime; }
     
     // Get link quality statistics
     uint16_t getPacketsSent() const { return packetsSent; }

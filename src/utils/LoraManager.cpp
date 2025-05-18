@@ -40,8 +40,12 @@ LoraManager::LoraManager() :
     packetsReceived(0),
     packetsLost(0),
     lastStatsResetTime(0),
-    lastReceivedTime(0),
-    connectionTimeout(15000) // Default timeout of 15 seconds (1.5x the STATUS_PERIOD_MS)
+    lastReceivedTime(millis()), // Initialize to current time to avoid showing link down on startup
+    connectionTimeout(30000),   // Default timeout of 30 seconds
+    pingEnabled(false),         // Ping disabled by default
+    lastPingTime(0),
+    lastPongTime(0),
+    pingInterval(20000)         // Ping every 20 seconds
 {
     // Initialize queue
     for (int i = 0; i < QUEUE_SIZE; i++) {
@@ -160,11 +164,14 @@ bool LoraManager::sendPacket(uint8_t type, const char* data, size_t len) {
     packet.len = copyLen;    // Add to queue
     memcpy(&outQueue[slot], &packet, sizeof(packet));
     queueActive[slot] = true;
-    
-    // Set retry behavior based on packet type
-    // STATUS packets (fire-and-forget): no retries (0)
+      // Set retry behavior based on packet type
+    // STATUS, PING, and PONG packets (fire-and-forget): no retries (0)
     // Other packets: normal retry behavior (LORA_MAX_RETRIES)
-    queueRetries[slot] = (type == LORA_TYPE_STATUS) ? 0 : LORA_MAX_RETRIES;
+    if (type == LORA_TYPE_STATUS || type == LORA_TYPE_PING || type == LORA_TYPE_PONG) {
+        queueRetries[slot] = 0;  // No retries for status and ping/pong packets
+    } else {
+        queueRetries[slot] = LORA_MAX_RETRIES;
+    }
     queueRetryTime[slot] = millis(); // Send immediately
     
     return true;
@@ -243,16 +250,18 @@ void LoraManager::checkQueue() {
                 if (outQueue[i].type != LORA_TYPE_ACK) { // Don't count ACKs in the statistics
                     packetsSent++;
                 }
-                
-                // Log transmission attempt
-                char logBuffer[64];
-                snprintf(logBuffer, sizeof(logBuffer), "LoRa TX: type=%d, id=%d, retry=%d", 
-                        outQueue[i].type, outQueue[i].id, queueRetries[i]);
-                Serial.println(logBuffer);
+                  // Log transmission attempt (but skip detailed logging for ping/pong packets)
+                if (outQueue[i].type != LORA_TYPE_PING && outQueue[i].type != LORA_TYPE_PONG) {
+                    char logBuffer[64];
+                    snprintf(logBuffer, sizeof(logBuffer), "LoRa TX: type=%d, id=%d, retry=%d", 
+                            outQueue[i].type, outQueue[i].id, queueRetries[i]);
+                    Serial.println(logBuffer);
+                }
                   // Handle transmission result
                 if (state == RADIOLIB_ERR_NONE) {                // Different handling based on packet type
-                    if (outQueue[i].type == LORA_TYPE_ACK || outQueue[i].type == LORA_TYPE_STATUS) {
-                        // No need to wait for ACKs on ACK packets or STATUS messages, remove from queue immediately
+                    if (outQueue[i].type == LORA_TYPE_ACK || outQueue[i].type == LORA_TYPE_STATUS || 
+                        outQueue[i].type == LORA_TYPE_PING || outQueue[i].type == LORA_TYPE_PONG) {
+                        // No need to wait for ACKs on ACK packets, STATUS messages, or ping/pong, remove from queue immediately
                         queueActive[i] = false;
                     } else {
                         // For all other packet types, handle retries
@@ -263,27 +272,32 @@ void LoraManager::checkQueue() {
                             outQueue[i].len >= 11 && // Length check to avoid buffer overruns
                             memcmp(outQueue[i].data, "<CMD:DISARM", 11) == 0) {
                             maxRetries = LORA_MAX_RETRIES + 2; // Two extra tries for safety critical commands
-                        }
-                        
-                        // If max retries reached, remove from queue
+                        }                        // If max retries reached, remove from queue
                         if (queueRetries[i] >= maxRetries) {
                             queueActive[i] = false;
-                            Serial.println("LoRa TX: Max retries reached, dropping packet");
                             
-                            // Update packet loss statistics
-                            packetsLost++;
+                            // Only log packet drops for packets other than ping/pong
+                            if (outQueue[i].type != LORA_TYPE_PING && outQueue[i].type != LORA_TYPE_PONG) {
+                                Serial.println("LoRa TX: Max retries reached, dropping packet");
+                                
+                                // Update packet loss statistics (don't count ping/pong packets)
+                                packetsLost++;
+                            }
                         } else {
                             // Set next retry time with exponential backoff
                             // First transmit was already done, increment retry counter for next attempt
                             queueRetries[i]++;
                             queueRetryTime[i] = now + LORA_RETRY_BASE_MS * (1 << queueRetries[i]);
                         }
-                    }
-                } else {
+                    }                } else {
                     // Transmission failed, retry immediately on next check
                     queueRetryTime[i] = now;
-                    Serial.print("LoRa TX failed: ");
-                    Serial.println(state);
+                    
+                    // Only log failures for packets other than ping/pong to reduce noise
+                    if (outQueue[i].type != LORA_TYPE_PING && outQueue[i].type != LORA_TYPE_PONG) {
+                        Serial.print("LoRa TX failed: ");
+                        Serial.println(state);
+                    }
                 }
                 
                 // Restart receiver
@@ -293,17 +307,87 @@ void LoraManager::checkQueue() {
     }
 }
 
+// Improved connected check that considers RSSI, ping responses, and packet timestamps
+bool LoraManager::isConnected() const {
+    // Always check if we've received any packets within the timeout period
+    uint32_t timeSinceLastRx = millis() - lastReceivedTime;
+    
+    if (timeSinceLastRx < connectionTimeout) {
+        // If we've received any packet recently, we're definitely connected
+        return true;
+    }
+    
+    if (pingEnabled) {
+        // If ping is enabled, check if we've received a pong recently
+        if (lastPongTime > 0 && (millis() - lastPongTime) < connectionTimeout) {
+            return true;
+        }
+    }
+    
+    // If we have decent signal strength, we might still be connected despite no recent packets
+    if (rssi > -110 && packetsReceived > 0) {
+        return true;
+    }
+    
+    // No evidence of connection
+    return false;
+}
+
+// Send a ping packet to check link status
+void LoraManager::sendPing() {
+    // Only send ping if enabled
+    if (!pingEnabled || !initialized) {
+        return;
+    }
+    
+    // Don't send pings too frequently
+    if ((millis() - lastPingTime) < pingInterval) {
+        return;
+    }
+    
+    // Update ping time
+    lastPingTime = millis();
+    
+    // Create a basic ping packet with timestamp
+    char pingData[16];
+    snprintf(pingData, sizeof(pingData), "%lu", millis());
+    
+    // Find a free queue slot (don't block important messages with pings)
+    int slot = findFreeQueueSlot();
+    if (slot < 0) {
+        return; // Skip ping if queue is full
+    }
+    
+    // Prepare packet manually
+    LoraPacket packet;
+    packet.type = LORA_TYPE_PING;
+    packet.source = address;
+    packet.dest = targetAddress;
+    packet.id = txPacketId++;
+    
+    // Copy data 
+    size_t copyLen = min(strlen(pingData), sizeof(packet.data));
+    memcpy(packet.data, pingData, copyLen);
+    packet.len = copyLen;
+      // Add to queue with no retries
+    memcpy(&outQueue[slot], &packet, sizeof(packet));
+    queueActive[slot] = true;
+    queueRetries[slot] = 0; // No retries for ping
+    queueRetryTime[slot] = millis() + 500; // Small delay to avoid crowding the queue
+}
+
 void LoraManager::processIncomingPacket(LoraPacket* packet) {
     // Make sure the packet is for us
     if (packet->dest != address && packet->dest != 0xFF) {
         return;
     }
-    
-    // Log packet info
-    char logBuffer[64];
-    snprintf(logBuffer, sizeof(logBuffer), "LoRa RX: type=%d, id=%d, source=0x%02X", 
-            packet->type, packet->id, packet->source);
-    Serial.println(logBuffer);
+      // Log packet info (but skip ping/pong packets to reduce log noise)
+    if (packet->type != LORA_TYPE_PING && packet->type != LORA_TYPE_PONG) {
+        char logBuffer[64];
+        snprintf(logBuffer, sizeof(logBuffer), "LoRa RX: type=%d, id=%d, source=0x%02X", 
+                packet->type, packet->id, packet->source);
+        Serial.println(logBuffer);
+    }
     
     // Update last received time if packet came from our target
     if (packet->source == targetAddress) {
@@ -313,7 +397,7 @@ void LoraManager::processIncomingPacket(LoraPacket* packet) {
     bool foundMatch = false;
     
     // Handle based on packet type
-    switch (packet->type) {        case LORA_TYPE_CMD:
+    switch (packet->type) {case LORA_TYPE_CMD:
             // Send ACK for command FIRST before processing to ensure prompt acknowledgment
             sendAckImmediate(packet->id);
             
@@ -354,8 +438,7 @@ void LoraManager::processIncomingPacket(LoraPacket* packet) {
                 onPacketReceived(packet);
             }
             break;   // continue with function
-        
-        case LORA_TYPE_SETTINGS:
+          case LORA_TYPE_SETTINGS:
             // Apply LoRa settings from packet
             if (packet->len >= sizeof(LoraSettings)) {
                 LoraSettings settings;
@@ -367,6 +450,24 @@ void LoraManager::processIncomingPacket(LoraPacket* packet) {
                 // Send ACK for settings packet
                 sendAck(packet->id);
             }
+            break;
+            
+        case LORA_TYPE_PING:
+            // Respond with a pong packet immediately, no ACK needed for pings
+            {
+                // Create pong packet with same payload (echo)
+                char pongData[LORA_MAX_PACKET_SIZE];
+                if (packet->len < sizeof(pongData)) {
+                    memcpy(pongData, packet->data, packet->len);
+                    pongData[packet->len] = '\0';
+                    sendPacket(LORA_TYPE_PONG, pongData, packet->len);
+                }
+            }
+            break;
+            
+        case LORA_TYPE_PONG:
+            // Record that we received a pong response
+            lastPongTime = millis();
             break;
     }
 }

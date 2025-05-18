@@ -152,14 +152,16 @@ void setup() {
   
   Serial.println("\n<DEBUG:GS_INIT>");
   printHelp();
-  
-  // Initialize LoRa communication  Serial.println("<DEBUG:INITIALIZING_LORA>");
+    // Initialize LoRa communication  Serial.println("<DEBUG:INITIALIZING_LORA>");
   if (loraManager.begin(LORA_GS_ADDR, LORA_FC_ADDR)) {
     Serial.println("<DEBUG:LORA_INIT_SUCCESS>");
     Serial.println("<GS_LINK:READY>");
     
     // Set the packet handler
     loraManager.onPacketReceived = handleLoraPacket;
+    
+    // Enable ping mechanism for better link quality assessment
+    loraManager.enablePing(true);
   } else {
     Serial.println("<DEBUG:LORA_INIT_FAILED>");
     Serial.println("<GS_LINK:ERROR>");
@@ -183,9 +185,11 @@ void loop() {
     
     // Give a small delay to allow for ACK processing
     delay(5);
-    
-    // Process queue (send pending packets, retry failed ones)
+      // Process queue (send pending packets, retry failed ones)
     loraManager.checkQueue();
+    
+    // Send ping to check link quality
+    loraManager.sendPing();
     
     // Periodic status updates less frequently to avoid duplicates (every 30 seconds)
     static unsigned long lastStatusUpdate = 0;
@@ -225,10 +229,27 @@ void loop() {
             linkQuality = "POOR";
             heartbeat.setPattern(HB_RECOVERY); // Very fast blink for bad connection
           }
+            // Format the loss rate string properly or use "0.0" to avoid a bare %
+          char lossRateStr[16];
+          if (sent > 0) {
+            snprintf(lossRateStr, sizeof(lossRateStr), "%.1f", lossRate);
+          } else {
+            strcpy(lossRateStr, "0.0");
+          }
+          
+          // Include last received time in HH:MM:SS format
+          char timeStr[16];
+          uint32_t timeSinceLastRx = loraManager.getTimeSinceLastRx();
+          uint32_t seconds = timeSinceLastRx / 1000;
+          uint8_t hours = seconds / 3600;
+          seconds %= 3600;
+          uint8_t minutes = seconds / 60;
+          seconds %= 60;
+          snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", hours, minutes, (uint8_t)seconds);
           
           char buffer[128];
-          snprintf(buffer, sizeof(buffer), "<GS_LINK:%s,RSSI:%d,SNR:%.1f,PKT_SENT:%u,PKT_RECV:%u,LOSS:%.1f%%>", 
-                  linkQuality.c_str(), rssi, snr, sent, received, lossRate);
+          snprintf(buffer, sizeof(buffer), "<GS_LINK:%s,RSSI:%d,SNR:%.1f,PKT_SENT:%u,PKT_RECV:%u,LOSS:%s%%,LAST_RX:%s>", 
+                  linkQuality.c_str(), rssi, snr, sent, received, lossRateStr, timeStr);
           Serial.println(buffer);
           
           // Reset statistics every hour to avoid overflow

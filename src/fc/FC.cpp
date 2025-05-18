@@ -182,7 +182,7 @@ void reportLoraLinkStatus() {
   uint16_t sent = loraManager.getPacketsSent();
   uint16_t received = loraManager.getPacketsReceived();
   uint16_t lost = loraManager.getPacketsLost();
-  float lossRate = loraManager.getPacketLossRate() * 100.0f; // Convert to percentage
+  float lossRate = (received > 0) ? loraManager.getPacketLossRate() * 100.0f : 0.0f; // Convert to percentage
   
   // Get RF quality metrics
   int16_t rssi = loraManager.getLastRssi();
@@ -191,10 +191,11 @@ void reportLoraLinkStatus() {
   // Get timing data
   uint32_t timeSinceLastRx = loraManager.getTimeSinceLastRx();
   uint32_t statsDuration = loraManager.getStatsDuration();
-  
-  // Determine link quality based on RSSI
+    // Determine link quality based on RSSI and connection status
   String linkQuality;
-  if (!loraManager.isConnected()) {
+  bool isConnected = loraManager.isConnected();
+  
+  if (!isConnected) {
     linkQuality = "DOWN";
   } else if (rssi > -90) {
     linkQuality = "EXCELLENT";
@@ -207,17 +208,33 @@ void reportLoraLinkStatus() {
   }
     // Format and send link status
   char buffer[128];
+  // Format the last RX time in HH:MM:SS format
+  char timeStr[16];
+  uint32_t seconds = timeSinceLastRx / 1000;
+  uint8_t hours = seconds / 3600;
+  seconds %= 3600;
+  uint8_t minutes = seconds / 60;
+  seconds %= 60;
+  snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", hours, minutes, (uint8_t)seconds);
+  
+  // Format the loss rate string properly or use "0.0" to avoid a bare %
+  char lossRateStr[16];
+  if (sent > 0) {
+    snprintf(lossRateStr, sizeof(lossRateStr), "%.1f", lossRate);
+  } else {
+    strcpy(lossRateStr, "0.0");
+  }
   
   // Check if SNR value is valid (RFM95 returns 0 SNR when no packets received)
   if (received > 0 && snr != 0) {
     snprintf(buffer, sizeof(buffer), 
-            "<FC_LINK:%s,RSSI:%d,SNR:%.1f,PKT_SENT:%u,PKT_RECV:%u,LOSS:%.1f%%,LAST_RX:%lums>", 
-            linkQuality.c_str(), rssi, snr, sent, received, lossRate, timeSinceLastRx);
+            "<FC_LINK:%s,RSSI:%d,SNR:%.1f,PKT_SENT:%u,PKT_RECV:%u,LOSS:%s%%,LAST_RX:%s>", 
+            linkQuality.c_str(), rssi, snr, sent, received, lossRateStr, timeStr);
   } else {
     // No valid SNR, omit it from output
     snprintf(buffer, sizeof(buffer), 
-            "<FC_LINK:%s,RSSI:%d,PKT_SENT:%u,PKT_RECV:%u,LOSS:%.1f%%,LAST_RX:%lums>", 
-            linkQuality.c_str(), rssi, sent, received, lossRate, timeSinceLastRx);
+            "<FC_LINK:%s,RSSI:%d,PKT_SENT:%u,PKT_RECV:%u,LOSS:%s%%,LAST_RX:%s>", 
+            linkQuality.c_str(), rssi, sent, received, lossRateStr, timeStr);
   }
   Serial.println(buffer);
   
@@ -390,9 +407,14 @@ void setup() {
   Serial2.begin(115200);
   Serial2.setRx(PA2);
   Serial2.setTx(PA3);
-  
   // Initialize report timers
   lastLoraLinkReport = millis(); // Initialize link report timer
+  
+  // Set a longer connection timeout (30 seconds, matching report interval)
+  loraManager.setConnectionTimeout(30000);
+  
+  // Enable ping mechanism for better link quality assessment
+  loraManager.enablePing(true);
   
   // Send initialization messages using FrameCodec
   char buffer[64];
@@ -454,6 +476,8 @@ void loop() {
       // We are in a post-command processing window, check queue more frequently
       loraManager.checkQueue();
     }
+      // Send ping to check link quality
+    loraManager.sendPing();
     
     // Periodically report LoRa link status (every 30 seconds)
     if (now - lastLoraLinkReport >= LORA_LINK_REPORT_PERIOD_MS) {
