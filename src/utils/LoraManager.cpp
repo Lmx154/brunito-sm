@@ -272,22 +272,50 @@ void LoraManager::checkQueue() {
                             outQueue[i].len >= 11 && // Length check to avoid buffer overruns
                             memcmp(outQueue[i].data, "<CMD:DISARM", 11) == 0) {
                             maxRetries = LORA_MAX_RETRIES + 2; // Two extra tries for safety critical commands
-                        }                        // If max retries reached, remove from queue
+                        }                        // If max retries reached, but add a grace period for ACKs to arrive
                         if (queueRetries[i] >= maxRetries) {
-                            queueActive[i] = false;
-                            
-                            // Only log packet drops for packets other than ping/pong
-                            if (outQueue[i].type != LORA_TYPE_PING && outQueue[i].type != LORA_TYPE_PONG) {
-                                Serial.println("LoRa TX: Max retries reached, dropping packet");
+                            // If this is the exact retry when we hit max retries, set a grace period
+                            if (queueRetries[i] == maxRetries) {
+                                // Add grace period for ACK to arrive (1.5 × LORA_ACK_TIMEOUT_MS)
+                                queueRetryTime[i] = now + (LORA_ACK_TIMEOUT_MS * 3 / 2);
                                 
-                                // Update packet loss statistics (don't count ping/pong packets)
-                                packetsLost++;
+                                // Only log for packets other than ping/pong
+                                if (outQueue[i].type != LORA_TYPE_PING && outQueue[i].type != LORA_TYPE_PONG) {
+                                    Serial.println("LoRa TX: Max retries reached, waiting for ACK");
+                                }
+                                
+                                // Increment retry counter beyond max to indicate we're in grace period
+                                queueRetries[i]++;
                             }
-                        } else {
+                            // If we're past the grace period, now actually drop the packet
+                            else if (now >= queueRetryTime[i]) {
+                                queueActive[i] = false;
+                                
+                                // Only log packet drops for packets other than ping/pong
+                                if (outQueue[i].type != LORA_TYPE_PING && outQueue[i].type != LORA_TYPE_PONG) {
+                                    Serial.println("LoRa TX: No ACK received, dropping packet");
+                                    
+                                    // Update packet loss statistics (don't count ping/pong packets)
+                                    packetsLost++;
+                                }
+                            }                        } else if (queueRetries[i] < maxRetries) {
                             // Set next retry time with exponential backoff
                             // First transmit was already done, increment retry counter for next attempt
                             queueRetries[i]++;
-                            queueRetryTime[i] = now + LORA_RETRY_BASE_MS * (1 << queueRetries[i]);
+                            
+                            // Use a more moderate exponential backoff formula
+                            // This provides more reasonable timing between retries
+                            // 1st retry: BASE_MS, 2nd: BASE_MS*1.5, 3rd: BASE_MS*2.25, 4th: BASE_MS*3.375, etc.
+                            uint32_t backoff = LORA_RETRY_BASE_MS;
+                            for (uint8_t j = 1; j < queueRetries[i]; j++) {
+                                backoff = (backoff * 3) / 2;  // 1.5× multiplier each retry
+                            }
+                            queueRetryTime[i] = now + backoff;
+                            
+                            // For important commands, add a little randomness to avoid collision
+                            if (outQueue[i].type == LORA_TYPE_CMD) {
+                                queueRetryTime[i] += random(50, 100);
+                            }
                         }
                     }                } else {
                     // Transmission failed, retry immediately on next check
@@ -406,16 +434,37 @@ void LoraManager::processIncomingPacket(LoraPacket* packet) {
                 onPacketReceived(packet);
             }
             break;
-            
-        case LORA_TYPE_ACK:
+              case LORA_TYPE_ACK:
             // Find matching packet in queue and remove it
             foundMatch = false; // Reset the variable
+            
+            // First try for exact ID match
             for (int i = 0; i < QUEUE_SIZE; i++) {
                 if (queueActive[i] && outQueue[i].id == packet->id) {
                     queueActive[i] = false;
                     Serial.println("LoRa ACK received, packet removed from queue");
                     foundMatch = true;
                     break;
+                }
+            }
+            
+            // Extra check - if command was DISARM, always prioritize to ensure safety
+            if (!foundMatch && packet->id > 0) {
+                for (int i = 0; i < QUEUE_SIZE; i++) {
+                    // Look for any active DISARM command that needs acknowledgment
+                    if (queueActive[i] && outQueue[i].type == LORA_TYPE_CMD && 
+                        outQueue[i].len >= 11 &&
+                        memcmp(outQueue[i].data, "<CMD:DISARM", 11) == 0) {
+                        
+                        // Found a DISARM command waiting for ACK
+                        queueActive[i] = false;
+                        char logBuffer[96];
+                        snprintf(logBuffer, sizeof(logBuffer), "LoRa DISARM ACK matched (expected ID:%d, got:%d)", 
+                                outQueue[i].id, packet->id);
+                        Serial.println(logBuffer);
+                        foundMatch = true;
+                        break;
+                    }
                 }
             }
             
