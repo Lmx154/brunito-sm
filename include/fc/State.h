@@ -43,8 +43,21 @@ private:
     static const unsigned long AUTO_RECOVERY_TIMEOUT = 1800000; // 30 minutes
     static constexpr float NO_MOTION_THRESHOLD = 0.02; // g
     
+    // Buzzer sound variables
+    unsigned long buzzerStartTime;
+    unsigned long buzzerDuration;
+    bool buzzerActive;
+    int currentBuzzerTone;
+    SystemState pendingSoundState;
+    int soundSequenceStep;
+    
     // Helper method to check inactivity timeout
     bool shouldAutoRecovery();
+    
+    // Buzzer sound utility functions
+    void startBuzzerSound(SystemState state);
+    void updateBuzzerSound();
+    void stopBuzzer();
     
 public:
     StateManager();

@@ -8,11 +8,23 @@
 #include "../include/fc/State.h"
 #include "../include/utils/FrameCodec.h"
 
+// Buzzer pin from hardware setup document - FC uses PB13
+#define BUZZER_PIN PB13
+
 StateManager::StateManager() : 
     currentState(STATE_IDLE), 
     armedTimestamp(0), 
     lastMotionTimestamp(0),
-    inMotion(false) {
+    inMotion(false),
+    buzzerStartTime(0),
+    buzzerDuration(0),
+    buzzerActive(false),
+    currentBuzzerTone(0),
+    pendingSoundState(STATE_IDLE),
+    soundSequenceStep(0) {
+    // Initialize buzzer pin
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW);
 }
 
 SystemState StateManager::getCurrentState() const {
@@ -56,8 +68,7 @@ bool StateManager::changeState(SystemState newState) {
                 allowed = true;
             }
             break;
-    }
-      // If transition is allowed, update state
+    }    // If transition is allowed, update state
     if (allowed) {
         // Record the previous state before changing
         SystemState oldState = currentState;
@@ -79,6 +90,9 @@ bool StateManager::changeState(SystemState newState) {
             lastMotionTimestamp = millis();
             inMotion = false;
         }
+        
+        // Start playing a sound for state transition (non-blocking)
+        startBuzzerSound(newState);
     }
     
     return allowed;
@@ -180,6 +194,9 @@ void StateManager::updateState() {
         FrameCodec::formatDebug(buffer, sizeof(buffer), "AUTO_RECOVERY_TRIGGERED");
         Serial.println(buffer);
     }
+    
+    // Update buzzer state (non-blocking sound handling)
+    updateBuzzerSound();
 }
 
 bool StateManager::shouldAutoRecovery() {
@@ -230,3 +247,109 @@ const char* StateManager::getStateStringFromEnum(SystemState state) const {
 const char* StateManager::getStateString() const {
     return getStateStringFromEnum(currentState);
 }
+
+// Initialize buzzer to play a sound in a non-blocking way
+void StateManager::startBuzzerSound(SystemState state) {
+    // Stop any currently playing sounds
+    stopBuzzer();
+    
+    // Set state for which we want to play a sound
+    pendingSoundState = state;
+    soundSequenceStep = 0;
+    
+    // Start the first tone in sequence
+    updateBuzzerSound();
+}
+
+// Update the buzzer state - should be called in every loop
+void StateManager::updateBuzzerSound() {
+    unsigned long currentTime = millis();
+    
+    // If buzzer is active and duration has expired
+    if (buzzerActive && (currentTime - buzzerStartTime >= buzzerDuration)) {
+        // Turn off buzzer
+        noTone(BUZZER_PIN);
+        digitalWrite(BUZZER_PIN, LOW);
+        buzzerActive = false;
+        
+        // Move to next step in the sequence
+        soundSequenceStep++;
+        
+        // A small delay between tones (non-blocking)
+        buzzerStartTime = currentTime;
+        buzzerDuration = 50; // 50ms gap between tones
+        return;
+    }
+    
+    // If we're in the pause between tones
+    if (!buzzerActive && (currentTime - buzzerStartTime >= buzzerDuration)) {
+        // Play the next tone based on current state and sequence step
+        switch (pendingSoundState) {
+            case STATE_IDLE:
+                // IDLE: Single medium beep
+                if (soundSequenceStep == 0) {
+                    tone(BUZZER_PIN, 1000);
+                    buzzerActive = true;
+                    buzzerStartTime = currentTime;
+                    buzzerDuration = 300;
+                    currentBuzzerTone = 1000;
+                }
+                break;
+                
+            case STATE_TEST:
+                // TEST: Alternating high/low beeps (6 tones total)
+                if (soundSequenceStep < 6) {
+                    // Even steps are high tones, odd steps are low tones
+                    int freq = (soundSequenceStep % 2 == 0) ? 1500 : 800;
+                    tone(BUZZER_PIN, freq);
+                    buzzerActive = true;
+                    buzzerStartTime = currentTime;
+                    buzzerDuration = 150;
+                    currentBuzzerTone = freq;
+                }
+                break;
+                
+            case STATE_ARMED:
+                // ARMED: Four ascending beeps
+                if (soundSequenceStep < 4) {
+                    // Increasing frequencies
+                    int frequencies[] = {1000, 1500, 2000, 2500};
+                    int durations[] = {150, 150, 250, 350};
+                    
+                    tone(BUZZER_PIN, frequencies[soundSequenceStep]);
+                    buzzerActive = true;
+                    buzzerStartTime = currentTime;
+                    buzzerDuration = durations[soundSequenceStep];
+                    currentBuzzerTone = frequencies[soundSequenceStep];
+                }
+                break;
+                
+            case STATE_RECOVERY:
+                // RECOVERY: SOS pattern (simpler version for non-blocking)
+                // 3 short, 3 long, 3 short (9 tones total)
+                if (soundSequenceStep < 9) {
+                    // Short beeps for steps 0-2 and 6-8, long beeps for 3-5
+                    int duration = (soundSequenceStep >= 3 && soundSequenceStep <= 5) ? 500 : 200;
+                    
+                    tone(BUZZER_PIN, 2000);
+                    buzzerActive = true;
+                    buzzerStartTime = currentTime;
+                    buzzerDuration = duration;
+                    currentBuzzerTone = 2000;
+                }
+                break;
+                
+            default:
+                break;
+        }
+    }
+}
+
+// Stop the buzzer immediately
+void StateManager::stopBuzzer() {
+    noTone(BUZZER_PIN);
+    digitalWrite(BUZZER_PIN, LOW);
+    buzzerActive = false;
+    buzzerDuration = 0;
+}
+

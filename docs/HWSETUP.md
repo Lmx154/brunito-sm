@@ -99,7 +99,7 @@ Each component (NAVC, FC, GS) uses a `build_src_filter` and `build_flags` for so
     * CR: 5
     * Sync Word: 0xAB
     * Node Addr: 0xA2
-* **Servo Motor:** PWM (PB10)
+* **Servo Motor:** PWM (PB14)
 
   * Timer: TIM2, CH3, 200Hz
 * **Buzzer:** Digital Output (PB13)
