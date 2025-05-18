@@ -2,6 +2,8 @@
 
 UartManager::UartManager() : 
     receiveBufferIndex(0),
+    examinedBufferIndex(0),
+    examinedBufferSize(0),
     packetSize(sizeof(SensorPacket)),
     packetReady(false),
     packetsReceived(0),
@@ -9,13 +11,35 @@ UartManager::UartManager() :
     crcErrors(0),
     lastPacketTime(0)
 {
-    // Initialize buffer
+    // Initialize buffers
     memset(receiveBuffer, 0, sizeof(receiveBuffer));
+    memset(examinedBuffer, 0, sizeof(examinedBuffer));
     memset(&latestPacket, 0, sizeof(latestPacket));
 }
 
 UartPacketStatus UartManager::processUartData() {
-    // Read available bytes from UART
+    // First, process any bytes that were examined but not consumed yet
+    while (examinedBufferIndex < examinedBufferSize) {
+        // Check if buffer has space
+        if (receiveBufferIndex >= sizeof(receiveBuffer)) {
+            // Buffer overflow, reset and increment error counter
+            receiveBufferIndex = 0;
+            packetsDropped++;
+            return PACKET_ERROR;
+        }
+        
+        // Process one examined byte
+        uint8_t currentByte = examinedBuffer[examinedBufferIndex++];
+        receiveBuffer[receiveBufferIndex++] = currentByte;
+    }
+    
+    // If we've processed all examined bytes, reset those indices
+    if (examinedBufferIndex >= examinedBufferSize) {
+        examinedBufferIndex = 0;
+        examinedBufferSize = 0;
+    }
+    
+    // Then, read available bytes from UART
     while (Serial2.available() > 0) {
         // Check if buffer has space
         if (receiveBufferIndex >= sizeof(receiveBuffer)) {
@@ -26,7 +50,8 @@ UartPacketStatus UartManager::processUartData() {
         }
         
         // Read one byte and add to buffer
-        receiveBuffer[receiveBufferIndex++] = Serial2.read();
+        uint8_t currentByte = Serial2.read();
+        receiveBuffer[receiveBufferIndex++] = currentByte;
         
         // Check if we have a complete packet
         if (receiveBufferIndex >= packetSize) {
@@ -42,10 +67,21 @@ UartPacketStatus UartManager::processUartData() {
                 packetsReceived++;
                 lastPacketTime = millis();
                 packetReady = true;
+                
+                // Debug - log successful packet
+                char logBuffer[64];
+                snprintf(logBuffer, sizeof(logBuffer), 
+                         "<DEBUG:PACKET_RECV:ID=%u,ALT=%ld>",
+                         latestPacket.packetId, latestPacket.altitude);
+                Serial.println(logBuffer);
+                
                 return PACKET_COMPLETE;
             } else {
-                // CRC error
+                // CRC error - attempt resynchronization
                 crcErrors++;
+                // Shift buffer by 1 byte to try to resynchronize
+                memmove(receiveBuffer, receiveBuffer + 1, sizeof(receiveBuffer) - 1);
+                receiveBufferIndex = packetSize - 1;
                 return PACKET_ERROR;
             }
         }
@@ -102,6 +138,13 @@ bool UartManager::sendCommand(const char* cmd) {
     // Send command to NAVC over Serial2
     Serial2.println(cmd);
     return true;
+}
+
+void UartManager::storeExaminedByte(uint8_t byte) {
+    // Store the examined byte only if there's space
+    if (examinedBufferSize < sizeof(examinedBuffer)) {
+        examinedBuffer[examinedBufferSize++] = byte;
+    }
 }
 
 bool UartManager::verifyCrc16(const SensorPacket& packet) {

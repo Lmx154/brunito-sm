@@ -81,7 +81,9 @@ SensorManager::~SensorManager() {
 }
 
 bool SensorManager::begin() {
-    // Initialize I2C bus
+    // Initialize I2C bus with explicit pin configuration
+    Wire.setSCL(PB8); // Set SCL pin to PB8
+    Wire.setSDA(PB9); // Set SDA pin to PB9
     Wire.begin();
     Wire.setClock(400000); // 400 kHz
     
@@ -196,12 +198,149 @@ bool SensorManager::begin() {
     
     // Set initial LED color to indicate successful init (green)
     setStatusLED(0, 255, 0);
-    
-    #if DEBUG_SENSORS
+      #if DEBUG_SENSORS
     Serial.println("<DEBUG:ALL_SENSORS_INIT_OK>");
     #endif
     
     return true;
+}
+
+int SensorManager::beginWithDiagnostics() {
+    // Initialize I2C bus with detailed diagnostics and explicit pin configuration
+    Wire.setSCL(PB8); // Set SCL pin to PB8
+    Wire.setSDA(PB9); // Set SDA pin to PB9
+    Wire.begin();
+    Wire.setClock(400000); // 400 kHz
+    Serial.println("<DEBUG:I2C_INIT:PB8_PB9_400kHz>");
+    
+    // Check if we can communicate with I2C bus by scanning for standard devices
+    bool anyDeviceFound = false;
+    for (uint8_t addr = 1; addr < 127; addr++) {
+        Wire.beginTransmission(addr);
+        uint8_t error = Wire.endTransmission();
+        if (error == 0) {
+            char buffer[32];
+            snprintf(buffer, sizeof(buffer), "<DEBUG:I2C_DEVICE_FOUND:0x%02X>", addr);
+            Serial.println(buffer);
+            anyDeviceFound = true;
+        }
+    }
+    
+    if (!anyDeviceFound) {
+        Serial.println("<DEBUG:I2C_NO_DEVICES_FOUND>");
+        return 1; // Error: No I2C devices found
+    }
+    
+    // Serial1 for GPS
+    Serial1.begin(9600);
+    Serial1.setRx(PB7);
+    Serial1.setTx(PB6);
+    Serial.println("<DEBUG:GPS_UART_INIT:9600>");
+    
+    // Initialize RGB LED
+    statusLed.begin();
+    statusLed.clear();
+    statusLed.show();
+    Serial.println("<DEBUG:LED_INIT_OK>");
+    
+    // Initialize DS3231 RTC
+    Serial.println("<DEBUG:ATTEMPTING_RTC_INIT>");
+    if (!rtc.begin()) {
+        Serial.println("<DEBUG:RTC_INIT_FAILED>");
+        return 2; // Error: RTC initialization failed
+    }
+    Serial.println("<DEBUG:RTC_INIT_OK>");
+    
+    // Initialize BMP280 barometer
+    Serial.println("<DEBUG:ATTEMPTING_BARO_INIT>");
+    if (!baro.begin()) {
+        Serial.println("<DEBUG:BMP280_INIT_FAILED>");
+        return 3; // Error: BMP280 initialization failed
+    }
+    Serial.println("<DEBUG:BARO_INIT_OK>");
+    
+    // Configure BMP280 settings
+    baro.setSampling(Adafruit_BMP280::MODE_NORMAL,
+                    Adafruit_BMP280::SAMPLING_X2,
+                    Adafruit_BMP280::SAMPLING_X16,
+                    Adafruit_BMP280::FILTER_X4,
+                    Adafruit_BMP280::STANDBY_MS_1);
+    
+    // Initialize BMI088 accelerometer
+    Serial.println("<DEBUG:ATTEMPTING_ACCEL_INIT:0x19>");
+    accel = new Bmi088Accel(Wire, 0x19); // BMI088 accelerometer I2C address
+    
+    int status = accel->begin();
+    if (status < 0) {
+        char buffer[64];
+        snprintf(buffer, sizeof(buffer), "<DEBUG:BMI088_ACCEL_INIT_FAILED:CODE=%d>", status);
+        Serial.println(buffer);
+        return 4; // Error: BMI088 accelerometer initialization failed
+    }
+    Serial.println("<DEBUG:ACCEL_INIT_OK>");
+    
+    // Configure accelerometer settings
+    accel->setRange(Bmi088Accel::RANGE_6G);
+    accel->setOdr(Bmi088Accel::ODR_800HZ_BW_80HZ);
+    
+    // Initialize BMI088 gyroscope
+    Serial.println("<DEBUG:ATTEMPTING_GYRO_INIT:0x69>");
+    gyro = new Bmi088Gyro(Wire, 0x69); // BMI088 gyroscope I2C address
+    
+    status = gyro->begin();
+    if (status < 0) {
+        char buffer[64];
+        snprintf(buffer, sizeof(buffer), "<DEBUG:BMI088_GYRO_INIT_FAILED:CODE=%d>", status);
+        Serial.println(buffer);
+        return 5; // Error: BMI088 gyroscope initialization failed
+    }
+    Serial.println("<DEBUG:GYRO_INIT_OK>");
+    
+    // Configure gyroscope settings
+    gyro->setRange(Bmi088Gyro::RANGE_500DPS);
+    gyro->setOdr(Bmi088Gyro::ODR_400HZ_BW_47HZ);
+    
+    // Setup BMM150 magnetometer interface
+    Serial.println("<DEBUG:ATTEMPTING_MAG_INIT:0x13>");
+    magUserData.dev_addr = 0x13; // BMM150 I2C address
+    magUserData.intf_ptr = nullptr;
+    
+    mag.intf_ptr = &magUserData;
+    mag.read = bmm150_i2c_read;
+    mag.write = bmm150_i2c_write;
+    mag.delay_us = bmm150_delay_us;
+    mag.intf = BMM150_I2C_INTF;
+    
+    status = bmm150_init(&mag);
+    if (status != BMM150_OK) {
+        char buffer[64];
+        snprintf(buffer, sizeof(buffer), "<DEBUG:BMM150_INIT_FAILED:CODE=%d>", status);
+        Serial.println(buffer);
+        return 6; // Error: BMM150 initialization failed
+    }
+    Serial.println("<DEBUG:MAG_INIT_OK>");
+    
+    // Configure magnetometer settings
+    struct bmm150_settings settings;
+    settings.preset_mode = BMM150_PRESETMODE_HIGHACCURACY;
+    status = bmm150_set_presetmode(&settings, &mag);
+    if (status != BMM150_OK) {
+        Serial.println("<DEBUG:BMM150_CONFIG_FAILED>");
+        return 7; // Error: BMM150 configuration failed
+    }
+    
+    // If RTC lost power, set to compile time
+    if (rtc.lostPower()) {
+        Serial.println("<DEBUG:RTC_SET_TO_COMPILE_TIME>");
+        rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    }
+    
+    // Set initial LED color to indicate successful init
+    setStatusLED(0, 255, 0);
+    Serial.println("<DEBUG:ALL_SENSORS_INIT_OK>");
+    
+    // Return 0 for success
+    return 0;
 }
 
 void SensorManager::update() {
@@ -226,6 +365,158 @@ void SensorManager::update() {
         lastFusionTime = currentTime;
         processSensorData();
     }
+}
+
+bool SensorManager::updateWithDiagnostics() {
+    unsigned long currentTime = millis();
+    bool success = true;
+    
+    // Process any available GPS data (non-blocking)
+    processGPS();
+    
+    // Sample sensors at SENSOR_SAMPLE_RATE_HZ (100 Hz)
+    if (currentTime - lastSampleTime >= (1000 / SENSOR_SAMPLE_RATE_HZ)) {
+        lastSampleTime = currentTime;
+          // Read accelerometer data with error checking and retry
+        if (accel != nullptr) {
+            bool accelSuccess = false;
+            
+            // Try up to 3 times to get valid data
+            for (int attempt = 0; attempt < 3 && !accelSuccess; attempt++) {
+                // Add a small delay between attempts (except first attempt)
+                if (attempt > 0) {
+                    delay(2); // 2ms delay between retries
+                }
+                
+                // Use readSensor directly
+                accel->readSensor();
+                float x = accel->getAccelX_mss();
+                float y = accel->getAccelY_mss();
+                float z = accel->getAccelZ_mss();
+                
+                // Check if all values are valid (not NAN, INF or all zeros)
+                if (!isnan(x) && !isinf(x) && 
+                    !isnan(y) && !isinf(y) && 
+                    !isnan(z) && !isinf(z) && 
+                    (x != 0.0f || y != 0.0f || z != 0.0f)) {
+                    
+                    // If we reach here without errors, update the accelerometer data
+                    accelData[0] = x;
+                    accelData[1] = y;
+                    accelData[2] = z;
+                    accelSuccess = true;
+                    
+                    if (attempt > 0) {
+                        Serial.print("<DEBUG:ACCEL_RECOVERED:ATTEMPT=");
+                        Serial.print(attempt + 1);
+                        Serial.println(">");
+                    }
+                }
+            }
+            
+            if (!accelSuccess) {
+                // Accelerometer communication failed after all retries
+                Serial.print("<DEBUG:ACCEL_READ_FAILED:X=");
+                Serial.print(accel->getAccelX_mss());
+                Serial.print(",Y="); 
+                Serial.print(accel->getAccelY_mss());
+                Serial.print(",Z=");
+                Serial.print(accel->getAccelZ_mss());
+                Serial.println(">");
+                success = false;
+            }
+        } else {
+            Serial.println("<DEBUG:ACCEL_NOT_INITIALIZED>");
+            success = false;
+        }
+        
+        // Read gyroscope data with error checking and retry
+        if (gyro != nullptr) {
+            bool gyroSuccess = false;
+            
+            // Try up to 3 times to get valid data
+            for (int attempt = 0; attempt < 3 && !gyroSuccess; attempt++) {
+                // Add a small delay between attempts (except first attempt)
+                if (attempt > 0) {
+                    delay(2); // 2ms delay between retries
+                }
+                
+                // Reset I2C bus between attempts after first failure
+                if (attempt > 0) {
+                    // Quick I2C reset - end transmission and start again
+                    Wire.endTransmission(true);
+                    delay(1);
+                }
+                
+                gyro->readSensor();
+                float x = gyro->getGyroX_rads();
+                float y = gyro->getGyroY_rads();
+                float z = gyro->getGyroZ_rads();
+                
+                // Check if all values are valid (not NAN or INF)
+                if (!isnan(x) && !isinf(x) && 
+                    !isnan(y) && !isinf(y) && 
+                    !isnan(z) && !isinf(z)) {
+                    
+                    // If we reach here without errors, update the gyroscope data
+                    gyroData[0] = x;
+                    gyroData[1] = y;
+                    gyroData[2] = z;
+                    gyroSuccess = true;
+                    
+                    if (attempt > 0) {
+                        Serial.print("<DEBUG:GYRO_RECOVERED:ATTEMPT=");
+                        Serial.print(attempt + 1);
+                        Serial.println(">");
+                    }
+                }
+            }
+            
+            if (!gyroSuccess) {
+                // Gyroscope communication failed after all retries
+                Serial.print("<DEBUG:GYRO_READ_FAILED:X=");
+                Serial.print(gyro->getGyroX_rads());
+                Serial.print(",Y="); 
+                Serial.print(gyro->getGyroY_rads());
+                Serial.print(",Z=");
+                Serial.print(gyro->getGyroZ_rads());
+                Serial.println(">");
+                success = false;
+            }
+        } else {
+            Serial.println("<DEBUG:GYRO_NOT_INITIALIZED>");
+            success = false;
+        }
+        
+        // Read magnetometer data
+        int8_t rslt = bmm150_read_mag_data(&magData, &mag);
+        if (rslt != BMM150_OK) {
+            Serial.print("<DEBUG:MAG_READ_FAILED:CODE=");
+            Serial.print(rslt);
+            Serial.println(">");
+            success = false;
+        }
+        
+        // Read barometer data
+        if (!isnan(baro.readTemperature()) && !isnan(baro.readPressure())) {
+            temperature = baro.readTemperature();
+            pressure = baro.readPressure();
+            altitude = baro.readAltitude(1013.25); // Standard pressure at sea level
+        } else {
+            Serial.println("<DEBUG:BARO_READ_FAILED>");
+            success = false;
+        }
+        
+        updateTime();
+    }
+    
+    // Process sensor data at SENSOR_FUSION_RATE_HZ (100 Hz)
+    if (currentTime - lastFusionTime >= (1000 / SENSOR_FUSION_RATE_HZ)) {
+        lastFusionTime = currentTime;
+        processSensorData();
+    }
+    
+    return success;
 }
 
 void SensorManager::processGPS() {
@@ -333,6 +624,18 @@ const SensorPacket& SensorManager::getPacket() const {
 bool SensorManager::isPacketReady() {
     unsigned long currentTime = millis();
     return (currentTime - lastStreamTime >= (1000 / UART_STREAM_RATE_HZ));
+}
+
+uint8_t SensorManager::getGpsSatelliteCount() const {
+    // Use a non-const approach with mutable to safely handle the 
+    // non-const methods in TinyGPSPlus while keeping our method const
+    TinyGPSPlus& non_const_gps = const_cast<TinyGPSPlus&>(gps);
+    
+    // Check if satellites info is valid before accessing
+    if (non_const_gps.satellites.isValid()) {
+        return static_cast<uint8_t>(non_const_gps.satellites.value());
+    }
+    return 0;
 }
 
 void SensorManager::setStatusLED(uint8_t r, uint8_t g, uint8_t b) {

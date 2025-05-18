@@ -84,21 +84,27 @@ private:
 public:
     SensorManager();
     ~SensorManager(); // Destructor to clean up dynamic memory
-    
-    // Initialize all sensors
+      // Initialize all sensors
     bool begin();
     
-    // Main update loop - call as frequently as possible
+    // Initialize with detailed diagnostics - returns error code or 0 for success
+    int beginWithDiagnostics();
+      // Main update loop - call as frequently as possible
     void update();
+    
+    // Update sensors with diagnostics - returns true if successful, false if failures detected
+    bool updateWithDiagnostics();
     
     // Try to read from Serial GPS (non-blocking)
     void processGPS();
     
     // Get the latest binary packet
     const SensorPacket& getPacket() const;
-    
-    // Check if a new packet is ready to stream
+      // Check if a new packet is ready to stream
     bool isPacketReady();
+    
+    // Get the number of satellites currently tracked by GPS
+    uint8_t getGpsSatelliteCount() const;
     
     // Set the RGB status LED color
     void setStatusLED(uint8_t r, uint8_t g, uint8_t b);

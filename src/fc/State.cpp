@@ -8,8 +8,23 @@
 #include "../include/fc/State.h"
 #include "../include/utils/FrameCodec.h"
 
-// Buzzer pin from hardware setup document - FC uses PB13
-#define BUZZER_PIN PB13
+// Forward declarations for telemetry functions declared in FC.cpp
+extern void startTelemetry(uint8_t hz);
+extern void adjustTelemRate();
+
+// Pin definitions
+const int BUZZER_PIN = PB13;
+
+// Buzzer tone frequencies for state acknowledgments
+const int TONE_IDLE = 440;  // A4
+const int TONE_TEST = 523;  // C5
+const int TONE_ARMED = 659; // E5
+const int TONE_RECOVERY = 784; // G5
+const int TONE_ERROR = 220; // A3
+
+// Buzzer durations
+const unsigned long SHORT_BEEP = 100;
+const unsigned long LONG_BEEP = 250;
 
 StateManager::StateManager() : 
     currentState(STATE_IDLE), 
@@ -37,65 +52,77 @@ bool StateManager::changeState(SystemState newState) {
         return true;
     }
     
-    // Check if transition is allowed
-    bool allowed = false;
-    
+    // Validate transitions
     switch (currentState) {
         case STATE_IDLE:
             // From IDLE, can go to TEST or ARMED
-            if (newState == STATE_TEST || newState == STATE_ARMED) {
-                allowed = true;
+            if (newState != STATE_TEST && newState != STATE_ARMED) {
+                return false;
             }
             break;
             
         case STATE_TEST:
             // From TEST, can go to IDLE or ARMED
-            if (newState == STATE_IDLE || newState == STATE_ARMED) {
-                allowed = true;
+            if (newState != STATE_IDLE && newState != STATE_ARMED) {
+                return false;
             }
             break;
             
         case STATE_ARMED:
             // From ARMED, can go to IDLE or RECOVERY
-            if (newState == STATE_IDLE || newState == STATE_RECOVERY) {
-                allowed = true;
+            if (newState != STATE_IDLE && newState != STATE_RECOVERY) {
+                return false;
             }
             break;
             
         case STATE_RECOVERY:
             // From RECOVERY, can only go to IDLE
-            if (newState == STATE_IDLE) {
-                allowed = true;
+            if (newState != STATE_IDLE) {
+                return false;
             }
             break;
-    }    // If transition is allowed, update state
-    if (allowed) {
-        // Record the previous state before changing
-        SystemState oldState = currentState;
-        currentState = newState;
-        
-        // Debug output for state transitions
-        char debugMsg[48];
-        snprintf(debugMsg, sizeof(debugMsg), "STATE_CHANGE: %s -> %s", 
-                 getStateStringFromEnum(oldState), 
-                 getStateStringFromEnum(newState));
-                 
-        char buffer[64];
-        FrameCodec::formatDebug(buffer, sizeof(buffer), debugMsg);
-        Serial.println(buffer);
-        
-        // If entering ARMED state, record timestamp
-        if (newState == STATE_ARMED) {
+    }    
+    
+    // If transition is allowed, update state
+    // Execute state transitions
+    switch (newState) {        case STATE_IDLE:
+            // Stop any active systems
+            stopBuzzer();
+            // Play state change sound
+            startBuzzerSound(STATE_IDLE);
+            // Report state change
+            Serial.println("<DEBUG:STATE_CHANGE:IDLE>");
+            Serial.println("<DEBUG:TELEMETRY:STOPPED>");
+            break;
+              case STATE_TEST:
+            // Initialize test mode
+            startBuzzerSound(STATE_TEST);
+            Serial.println("<DEBUG:STATE_CHANGE:TEST>");
+            Serial.println("<DEBUG:TELEMETRY:TEST_MODE>");
+            break;
+              case STATE_ARMED:
+            // Initialize armed mode
             armedTimestamp = millis();
             lastMotionTimestamp = millis();
             inMotion = false;
-        }
-        
-        // Start playing a sound for state transition (non-blocking)
-        startBuzzerSound(newState);
+            startBuzzerSound(STATE_ARMED);
+            Serial.println("<DEBUG:STATE_CHANGE:ARMED>");
+            
+            // Start telemetry at default rate (20Hz)
+            Serial.println("<DEBUG:TELEMETRY:STARTING_20HZ>");
+            startTelemetry(20);
+            break;
+              case STATE_RECOVERY:
+            // Initialize recovery mode with buzzer
+            Serial.println("<DEBUG:STATE_CHANGE:RECOVERY>");
+            startBuzzerSound(STATE_RECOVERY);
+            Serial.println("<DEBUG:TELEMETRY:RECOVERY_MODE_1HZ>");
+            break;
     }
     
-    return allowed;
+    // Update state
+    currentState = newState;
+    return true;
 }
 
 bool StateManager::processCommand(CommandType cmd) {
@@ -248,26 +275,64 @@ const char* StateManager::getStateString() const {
     return getStateStringFromEnum(currentState);
 }
 
-// Initialize buzzer to play a sound in a non-blocking way
+// Start a buzzer sound pattern for the specific state
 void StateManager::startBuzzerSound(SystemState state) {
-    // Stop any currently playing sounds
-    stopBuzzer();
+    // Stop any current sound
+    noTone(BUZZER_PIN);
+    digitalWrite(BUZZER_PIN, LOW);
     
-    // Set state for which we want to play a sound
+    // Set up for the new sound sequence
     pendingSoundState = state;
     soundSequenceStep = 0;
+    buzzerActive = false;
+    buzzerStartTime = millis();
+    buzzerDuration = 0;
     
-    // Start the first tone in sequence
-    updateBuzzerSound();
+    // Immediate first beep based on state
+    switch (state) {
+        case STATE_IDLE:
+            // Simple low beep for IDLE
+            tone(BUZZER_PIN, TONE_IDLE);
+            buzzerActive = true;
+            buzzerDuration = SHORT_BEEP;
+            break;
+            
+        case STATE_TEST:
+            // Higher beep for TEST
+            tone(BUZZER_PIN, TONE_TEST);
+            buzzerActive = true;
+            buzzerDuration = SHORT_BEEP;
+            break;
+            
+        case STATE_ARMED:
+            // Ascending two tones for ARMED
+            tone(BUZZER_PIN, TONE_ARMED);
+            buzzerActive = true;
+            buzzerDuration = LONG_BEEP;
+            break;
+            
+        case STATE_RECOVERY:
+            // SOS pattern for RECOVERY (starts with first tone)
+            tone(BUZZER_PIN, TONE_RECOVERY);
+            buzzerActive = true;
+            buzzerDuration = SHORT_BEEP;
+            break;
+            
+        default:
+            // Error tone
+            tone(BUZZER_PIN, TONE_ERROR);
+            buzzerActive = true;
+            buzzerDuration = LONG_BEEP;
+            break;
+    }
 }
 
-// Update the buzzer state - should be called in every loop
+// Update buzzer sounds during each loop iteration
 void StateManager::updateBuzzerSound() {
     unsigned long currentTime = millis();
     
-    // If buzzer is active and duration has expired
+    // If a beep is active and its duration has passed, stop it
     if (buzzerActive && (currentTime - buzzerStartTime >= buzzerDuration)) {
-        // Turn off buzzer
         noTone(BUZZER_PIN);
         digitalWrite(BUZZER_PIN, LOW);
         buzzerActive = false;

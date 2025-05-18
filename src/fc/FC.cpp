@@ -36,8 +36,113 @@ unsigned long lastNavcStatsReport = 0; // For reporting NAVC packet statistics
 unsigned long lastLoraLinkReport = 0; // For reporting LoRa link quality
 static const uint32_t LORA_LINK_REPORT_PERIOD_MS = 30'000;   // 30 seconds, same as GS
 
+// Telemetry control variables
+uint8_t telemRate = 20; // Default 20 Hz
+unsigned long lastTelemTime = 0;
+unsigned long telemPeriodMs = 50; // 50ms = 20Hz
+
 // Forward declarations
 void reportLoraLinkStatus();
+String formatTelem(const SensorPacket& packet, bool gpsOnly);
+void startTelemetry(uint8_t hz = 20);
+void adjustTelemRate();
+void reinitializeUart();
+
+/**
+ * Formats telemetry data from binary packets to ASCII format
+ * 
+ * @param packet The binary sensor packet
+ * @param gpsOnly Whether to only include GPS data (for RECOVERY state)
+ * @return Formatted ASCII telemetry string
+ */
+String formatTelem(const SensorPacket& packet, bool gpsOnly) {
+  char buffer[200];
+  
+  if (gpsOnly) {
+    // RECOVERY mode - GPS only telemetry
+    snprintf(buffer, sizeof(buffer), "<TELEM:%lu,%ld,%ld,%ld>", 
+             packet.timestamp, 
+             packet.latitude, 
+             packet.longitude, 
+             packet.altitude);
+  } else {
+    // ARMED mode - Full telemetry
+    snprintf(buffer, sizeof(buffer), "<TELEM:%u,%lu,%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld>",
+             packet.packetId, 
+             packet.timestamp, 
+             packet.altitude, 
+             packet.accelX, packet.accelY, packet.accelZ,
+             packet.gyroX, packet.gyroY, packet.gyroZ,
+             packet.magX, packet.magY, packet.magZ,
+             packet.latitude, 
+             packet.longitude);
+  }
+  
+  return String(buffer);
+}
+
+/**
+ * Starts telemetry streaming at specified rate,
+ * adjusting based on bandwidth limitations
+ * 
+ * @param hz Desired telemetry rate in Hz
+ */
+void startTelemetry(uint8_t hz) {
+  telemRate = hz;
+  
+  // Cap rate based on bandwidth constraints
+  if (telemRate > 20) {
+    telemRate = 20; // Maximum 20 Hz
+  }
+  
+  // Adjust telemRate based on link quality
+  adjustTelemRate();
+  
+  // Calculate period in milliseconds
+  telemPeriodMs = 1000 / telemRate;
+  
+  // Reset last telemetry time to send first packet immediately
+  lastTelemTime = 0;
+  
+  char buffer[64];
+  snprintf(buffer, sizeof(buffer), "<DEBUG:TELEM_RATE_SET:%u>", telemRate);
+  Serial.println(buffer);
+}
+
+/**
+ * Adjusts telemetry rate based on LoRa link quality
+ * Throttles from 20 → 4 Hz when LoRa RSSI < -110 dBm
+ */
+void adjustTelemRate() {
+  if (!loraManager.isInitialized()) {
+    return;
+  }
+  
+  int16_t rssi = loraManager.getLastRssi();
+  uint8_t newRate = telemRate;
+  
+  // Adjust rate based on RSSI
+  if (rssi < -110) {
+    // Poor link quality - reduce rate to 4 Hz
+    newRate = 4;
+  } else if (rssi < -100) {
+    // Fair link quality - reduce rate to 10 Hz
+    newRate = 10;
+  } else {
+    // Good link quality - use full rate up to 20 Hz
+    newRate = 20;
+  }
+  
+  // Only update if rate changed
+  if (newRate != telemRate) {
+    telemRate = newRate;
+    telemPeriodMs = 1000 / telemRate;
+    
+    char buffer[64];
+    snprintf(buffer, sizeof(buffer), "<DEBUG:TELEM_RATE_ADJUSTED:%u,RSSI:%d>", telemRate, rssi);
+    Serial.println(buffer);
+  }
+}
 
 void cmdTask() {
   // Process any incoming serial data (from USB-CDC) 
@@ -290,8 +395,122 @@ void handleLoraPacket(LoraPacket* packet) {
 
 // Function to process binary packets from NAVC
 void uartTask() {
-  // Check for UART data from NAVC at high frequency
-  UartPacketStatus status = uartManager.processUartData();
+  // Check if we're in ARMED or RECOVERY state - only process data if in these states
+  uint8_t currentState = stateManager.getCurrentState();
+  bool isArmed = (currentState == STATE_ARMED);
+  bool isRecovery = (currentState == STATE_RECOVERY);
+  bool shouldProcessTelemetry = (isArmed || isRecovery);
+  
+  // If we're in ARMED or RECOVERY state, tell NAVC to start streaming telemetry
+  // Otherwise, tell it to stop
+  static bool lastTelemetryState = false;
+  if (shouldProcessTelemetry != lastTelemetryState) {
+    if (shouldProcessTelemetry) {
+      // Small delay to ensure NAVC is ready to receive command
+      delay(5);
+      uartManager.sendCommand("<START_TELEMETRY>");
+      Serial.println("<DEBUG:REQUESTING_TELEMETRY_START>");
+    } else {
+      // Small delay to ensure NAVC is ready to receive command
+      delay(5);
+      uartManager.sendCommand("<STOP_TELEMETRY>");
+      Serial.println("<DEBUG:REQUESTING_TELEMETRY_STOP>");
+    }
+    lastTelemetryState = shouldProcessTelemetry;
+  }
+    // Check for UART data from NAVC at high frequency
+  // Only process telemetry data when in ARMED or RECOVERY states
+  // Command responses will still be processed regardless of state (handled internally in uartManager)
+  UartPacketStatus status = shouldProcessTelemetry ? uartManager.processUartData() : PACKET_NONE;
+    // Debug output for UART data availability (once every 2 seconds)
+  static unsigned long lastUartDebugTime = 0;
+  static int uartFailCount = 0;
+  unsigned long currentTime = millis();
+  if (currentTime - lastUartDebugTime >= 2000) {
+    lastUartDebugTime = currentTime;
+      // Check if there's any UART data at all
+    int bytesAvailable = Serial2.available();
+    unsigned long timeSinceLastPacket = uartManager.getTimeSinceLastPacket();
+    
+    // Enhanced UART diagnostic info with pin status
+    char buffer[128];
+    
+    // Additional pin checking when no data is coming
+    if (bytesAvailable == 0 && uartManager.getPacketsReceived() == 0) {
+      // Check digital state of RX pin - useful for troubleshooting
+      int rxPinState = digitalRead(PA2);
+      snprintf(buffer, sizeof(buffer), 
+              "<DEBUG:UART_STATUS:BYTES:%d,RECV:%lu,DROPS:%lu,ERRS:%lu,LAST:%lums,RX_PIN:%d>",
+              bytesAvailable,
+              uartManager.getPacketsReceived(),
+              uartManager.getPacketsDropped(),
+              uartManager.getCrcErrors(),
+              timeSinceLastPacket,
+              rxPinState);
+    } else {
+      snprintf(buffer, sizeof(buffer), 
+              "<DEBUG:UART_STATUS:BYTES:%d,RECV:%lu,DROPS:%lu,ERRS:%lu,LAST:%lums>",
+              bytesAvailable,
+              uartManager.getPacketsReceived(),
+              uartManager.getPacketsDropped(),
+              uartManager.getCrcErrors(),
+              timeSinceLastPacket);
+    }
+    Serial.println(buffer);
+      // If no data is coming in, try sending a ping to NAVC
+    if (bytesAvailable == 0) {      if (uartManager.getPacketsReceived() == 0 || timeSinceLastPacket > 10000) {
+        // Check RX pin state for hardware troubleshooting
+        int rxPinState = digitalRead(PA2);
+        Serial.print("<DEBUG:ATTEMPTING_NAVC_PING:RX_PIN=");
+        Serial.print(rxPinState);
+        Serial.println(">");
+        
+        // Safely send a ping without blocking
+        uartManager.sendCommand("<PING>");
+        uartFailCount++;
+        
+        // After 3 consecutive failures (6 seconds total), try reinitializing UART
+        // This threshold is reduced from 5 to detect problems earlier
+        if (uartFailCount >= 3) {
+          // Call our non-blocking reinitialization function
+          // It will manage its own state across multiple calls
+          reinitializeUart();
+          
+          // Don't reset uartFailCount here, we'll reset it after we start receiving packets again
+          // This prevents repeated reinitialization attempts that might make things worse
+          if (uartFailCount >= 10) {
+            // If we've tried many times, reset the counter to prevent integer overflow
+            // but keep it high enough to continue periodic reinit attempts
+            uartFailCount = 5; 
+          }
+        }
+      } else {
+        uartFailCount = 0; // Reset counter if we've received packets but just not at this moment
+      }} else {
+      // Data is available, try to examine the first few bytes without ACTUALLY consuming them      Serial.print("<DEBUG:UART_RAW_DATA:");
+      
+      // Read bytes into temporary buffer, then add them back
+      uint8_t tempBuffer[16]; // Make it bigger just in case
+      int bytesToExamine = min(bytesAvailable, 8);
+      
+      // Read bytes into temporary buffer
+      for (int i = 0; i < bytesToExamine; i++) {
+        tempBuffer[i] = Serial2.read();
+        Serial.print(tempBuffer[i], HEX);
+        Serial.print(" ");
+      }
+      Serial.println(">");
+      
+      // Put the data back by writing it to a different port and copying back
+      for (int i = bytesToExamine - 1; i >= 0; i--) {
+        // Since there's no way to push bytes back into the rx buffer,
+        // we need to store them and process them separately
+        uartManager.storeExaminedByte(tempBuffer[i]);
+      }
+      
+      uartFailCount = 0; // Reset counter when data is available
+    }
+  }
   
   // If a complete packet is ready, process it
   if (status == PACKET_COMPLETE && uartManager.isPacketReady()) {
@@ -302,19 +521,21 @@ void uartTask() {
       case STATE_ARMED:
         // In ARMED state, format full telemetry and send over LoRa
         if (loraManager.isInitialized()) {
-          char telemBuffer[128];
-          FrameCodec::formatArmedTelemetry(
-            telemBuffer, sizeof(telemBuffer),
-            packet.packetId, packet.timestamp,
-            packet.altitude, packet.accelX, packet.accelY, packet.accelZ,
-            packet.gyroX, packet.gyroY, packet.gyroZ,
-            packet.magX, packet.magY, packet.magZ,
-            packet.latitude, packet.longitude
-          );
-          
-          // Send telemetry to debug port and LoRa (LoRa at reduced rate if needed)
-          Serial.println(telemBuffer);
-          loraManager.sendPacket(LORA_TYPE_TELEM, telemBuffer, strlen(telemBuffer));
+          // Check if it's time to send telemetry based on the current rate
+          unsigned long now = millis();
+          if (now - lastTelemTime >= telemPeriodMs) {
+            lastTelemTime = now;
+              // Format telemetry using our new function
+            String telemStr = formatTelem(packet, false);
+            
+            // Send telemetry to debug port and LoRa
+            Serial.println(telemStr);
+            Serial.println("<DEBUG:SENDING_TELEM_PACKET>");
+            loraManager.sendPacket(LORA_TYPE_TELEM, telemStr.c_str(), telemStr.length());
+            
+            // Check if we need to adjust telemetry rate based on link quality
+            adjustTelemRate();
+          }
           
           // Report motion to state manager for auto-recovery detection
           float accelMag = sqrt(
@@ -329,15 +550,18 @@ void uartTask() {
       case STATE_RECOVERY:
         // In RECOVERY state, format recovery telemetry (GPS only) and send over LoRa
         if (loraManager.isInitialized()) {
-          char telemBuffer[64];
-          FrameCodec::formatRecoveryTelemetry(
-            telemBuffer, sizeof(telemBuffer),
-            packet.timestamp, packet.latitude, packet.longitude, packet.altitude
-          );
-          
-          // Send recovery telemetry to debug port and LoRa
-          Serial.println(telemBuffer);
-          loraManager.sendPacket(LORA_TYPE_TELEM, telemBuffer, strlen(telemBuffer));
+          // Recovery mode uses a fixed 1Hz rate to conserve bandwidth
+          unsigned long now = millis();
+          if (now - lastTelemTime >= 1000) { // 1 Hz fixed rate
+            lastTelemTime = now;
+            
+            // Format telemetry using our new function (gpsOnly=true)
+            String telemStr = formatTelem(packet, true);
+            
+            // Send recovery telemetry to debug port and LoRa
+            Serial.println(telemStr);
+            loraManager.sendPacket(LORA_TYPE_TELEM, telemStr.c_str(), telemStr.length());
+          }
         }
         break;
         
@@ -364,17 +588,18 @@ void uartTask() {
   } else if (status == PACKET_ERROR) {
     // Log packet error
     char errorBuffer[64];
-    FrameCodec::formatDebug(errorBuffer, sizeof(errorBuffer), "PACKET_ERROR");
+    FrameCodec::formatDebug(errorBuffer, sizeof(errorBuffer), "PACKET_ERROR:CRC");
     Serial.println(errorBuffer);
   }
-    // Periodically report UART packet statistics
-  unsigned long now = millis();
-  if (now - lastNavcStatsReport >= 5000) { // Every 5 seconds
-    lastNavcStatsReport = now;
+  
+  // Periodically report UART packet statistics
+  if (currentTime - lastNavcStatsReport >= 5000) { // Every 5 seconds
+    lastNavcStatsReport = currentTime;
     
     // Format and send statistics
     char statsBuffer[128];
-      // Determine NAVC link status based on time since last packet
+    
+    // Determine NAVC link status based on time since last packet
     String linkStatus = "DOWN";
     unsigned long timeSinceLastPacket = uartManager.getTimeSinceLastPacket();
     if (timeSinceLastPacket < 1000) {
@@ -415,10 +640,38 @@ void setup() {
   // Initialize serial communication for debug
   Serial.begin(921600); // FC uses a higher baud rate for USB-CDC
   while (!Serial && millis() < 3000); // Wait for Serial, but timeout after 3 seconds
-    // Initialize UART communication with NAVC
+    // Configure buzzer pin
+  pinMode(PB13, OUTPUT);
+  digitalWrite(PB13, LOW);
+  
+  // Configure UART pins explicitly
+  pinMode(PA2, INPUT_PULLUP); // RX pin as input with pullup
+  pinMode(PA3, OUTPUT);      // TX pin as output
+  
+  // Check NAVC UART settings in startup
+  Serial.println("<DEBUG:UART_SETUP:STARTING>");
+  
+  // Initialize UART communication with NAVC
   Serial2.begin(115200);
   Serial2.setRx(PA2);
   Serial2.setTx(PA3);
+  
+  // Small delay for UART to fully initialize
+  delay(100);
+  
+  // Try clearing any pending data
+  while (Serial2.available()) {
+    char c = Serial2.read();
+    Serial.println("<DEBUG:UART_FLUSH_CHAR:" + String(c) + ">");
+  }
+  
+  // Send a test command to NAVC to check if it's alive with multiple attempts
+  Serial.println("<DEBUG:SENDING_NAVC_PING>");
+  Serial2.println("<PING>");
+  delay(10);
+  Serial2.println("<ECHO:UART_TEST>");
+  Serial2.flush();
+  
   // Initialize report timers
   lastLoraLinkReport = millis(); // Initialize link report timer
   
@@ -497,10 +750,110 @@ void loop() {
       reportLoraLinkStatus();
     }
   }
-  
-  // Update heartbeat pattern if state changed
+    // Update heartbeat pattern if state changed
   updateHeartbeatPattern();
   
-  // Update heartbeat LED
+  // Update heartbeat LED and buzzer sounds
   heartbeat.update();
+  stateManager.updateState(); // This calls updateBuzzerSound() internally
+}
+
+// Reinitialize UART after multiple failures
+void reinitializeUart() {
+  // State machine for non-blocking UART reinitialization
+  enum ReinitState {
+    UART_REINIT_START,
+    UART_REINIT_END_PORT,
+    UART_REINIT_BEGIN_PORT,
+    UART_REINIT_SEND_PING,
+    UART_REINIT_SEND_ECHO,
+    UART_REINIT_COMPLETE
+  };
+  
+  static ReinitState reinitState = UART_REINIT_START;
+  static unsigned long reinitStateTime = 0;
+  static bool reinitializationInProgress = false;
+  
+  unsigned long currentTime = millis();
+  
+  // If we're not already in a reinitialization process, start one
+  if (!reinitializationInProgress) {
+    reinitState = UART_REINIT_START;
+    reinitializationInProgress = true;
+    reinitStateTime = currentTime;
+    Serial.println("<DEBUG:REINITIALIZING_UART:INITIATED>");
+  }
+  
+  // State machine for reinitialization
+  switch (reinitState) {
+    case UART_REINIT_START:
+      // Configure pins
+      pinMode(PA2, INPUT_PULLUP); // RX pin as input with pullup
+      pinMode(PA3, OUTPUT);       // TX pin as output
+      
+      Serial.println("<DEBUG:REINITIALIZING_UART:START>");
+      reinitState = UART_REINIT_END_PORT;
+      reinitStateTime = currentTime;
+      break;
+      
+    case UART_REINIT_END_PORT:
+      if (currentTime - reinitStateTime >= 10) {
+        // After small delay, close the port safely
+        Serial.println("<DEBUG:REINITIALIZING_UART:CLOSING_PORT>");
+        Serial2.end();
+        
+        reinitState = UART_REINIT_BEGIN_PORT;
+        reinitStateTime = currentTime;
+      }
+      break;
+      
+    case UART_REINIT_BEGIN_PORT:
+      if (currentTime - reinitStateTime >= 50) {
+        // After longer delay, reopen the port
+        Serial.println("<DEBUG:UART_CONFIG:BAUD=115200,RX=PA2,TX=PA3>");
+        Serial2.begin(115200);
+        Serial2.setRx(PA2);
+        Serial2.setTx(PA3);
+        
+        reinitState = UART_REINIT_SEND_PING;
+        reinitStateTime = currentTime;
+      }
+      break;
+      
+    case UART_REINIT_SEND_PING:
+      if (currentTime - reinitStateTime >= 20) {
+        // Send first test command
+        Serial.println("<DEBUG:SENDING_UART_PING>");
+        Serial2.println("<PING>");
+        
+        reinitState = UART_REINIT_SEND_ECHO;
+        reinitStateTime = currentTime;
+      }
+      break;
+      
+    case UART_REINIT_SEND_ECHO:
+      if (currentTime - reinitStateTime >= 20) {
+        // Send second test command
+        Serial.println("<DEBUG:SENDING_UART_ECHO>");
+        Serial2.println("<ECHO:UART_TEST>");
+        
+        reinitState = UART_REINIT_COMPLETE;
+        reinitStateTime = currentTime;
+      }
+      break;
+      
+    case UART_REINIT_COMPLETE:
+      if (currentTime - reinitStateTime >= 20) {
+        // Reset statistics and finish the reinitialization
+        Serial2.flush(); // Non-blocking flush
+        uartManager.resetStats();
+        
+        Serial.println("<DEBUG:REINITIALIZING_UART:COMPLETE>");
+        
+        // Mark reinitialization as complete
+        reinitializationInProgress = false;
+        reinitState = UART_REINIT_START; // Reset for next time
+      }
+      break;
+  }
 }

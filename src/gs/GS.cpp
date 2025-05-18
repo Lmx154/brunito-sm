@@ -2,7 +2,7 @@
  * GS.cpp - Ground Station for Brunito Project
  * 
  * This file contains the Ground Station (GS) module implementation.
- * Phase 3: Implements LoRa communication with the Flight Controller.
+ * Phase 4: Implements LoRa communication with FC and telemetry parsing/CSV output.
  */
 
 #include <Arduino.h>
@@ -10,6 +10,9 @@
 #include "../include/utils/FrameCodec.h"
 #include "../include/utils/LoraManager.h"
 #include "../include/config/lora.h"
+
+// Forward declarations
+void printHelp();
 
 // Global objects
 HeartbeatManager heartbeat(PC13);
@@ -24,6 +27,114 @@ bool cmdReady = false;
 unsigned long lastHeartbeatUpdate = 0;
 unsigned long lastLoraCheck = 0;
 
+// CSV output control
+bool outputCsvFormat = true;
+bool csvHeaderPrinted = false;
+
+/**
+ * Parse telemetry frame and output as CSV
+ * 
+ * @param frame The telemetry frame string
+ */
+void parseTelemToCsv(const char* frame) {
+  // Verify it's a TELEM frame
+  if (strncmp(frame, "<TELEM:", 7) != 0) {
+    Serial.println("<DEBUG:NOT_TELEM_FRAME>");
+    return;
+  }
+  
+  // Extract payload between : and >
+  char payload[LORA_MAX_PACKET_SIZE];
+  size_t i = 7;  // Skip "<TELEM:"
+  size_t p = 0;
+  
+  while (frame[i] != '>' && frame[i] != '\0' && p < sizeof(payload) - 1) {
+    payload[p++] = frame[i++];
+  }
+  payload[p] = '\0';  // Null terminate
+  
+  // Debug output
+  Serial.print("<DEBUG:TELEM_PAYLOAD:"); 
+  Serial.print(payload);
+  Serial.println(">");
+  
+  // Count commas to determine format (ARMED or RECOVERY)
+  int commaCount = 0;
+  for (size_t j = 0; j < p; j++) {
+    if (payload[j] == ',') commaCount++;
+  }
+  
+  Serial.print("<DEBUG:COMMA_COUNT:"); 
+  Serial.print(commaCount);
+  Serial.println(">");
+  
+  // Print CSV header if needed
+  if (!csvHeaderPrinted) {
+    if (commaCount == 13) {  // ARMED format (14 values)
+      Serial.println("pkID,timestamp_ms,alt_m,accel_x_g,accel_y_g,accel_z_g,"
+                    "gyro_x_dps,gyro_y_dps,gyro_z_dps,"
+                    "mag_x_uT,mag_y_uT,mag_z_uT,lat_deg,lon_deg");
+    } else if (commaCount == 3) {  // RECOVERY format (4 values)
+      Serial.println("timestamp_ms,lat_deg,lon_deg,alt_m");
+    }
+    csvHeaderPrinted = true;
+  }
+  
+  // Parse values and apply scaling based on format
+  if (commaCount == 13) {  // ARMED format
+    // Parse all 14 values
+    long values[14];
+    int valueIndex = 0;
+    char* token = strtok(payload, ",");
+    
+    while (token != NULL && valueIndex < 14) {
+      values[valueIndex++] = atol(token);
+      token = strtok(NULL, ",");
+    }
+    
+    // Apply scaling and print CSV line
+    if (valueIndex == 14) {
+      // Values: pkID, timestamp, alt, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, mag_x, mag_y, mag_z, lat, lon
+      Serial.print(values[0]); Serial.print(",");                   // pkID (raw)
+      Serial.print(values[1]); Serial.print(",");                   // timestamp_ms (raw)
+      Serial.print(values[2] / 100.0f, 2); Serial.print(",");       // alt_m (cm → m)
+      Serial.print(values[3] / 1000.0f, 3); Serial.print(",");      // accel_x_g (mg → g)
+      Serial.print(values[4] / 1000.0f, 3); Serial.print(",");      // accel_y_g (mg → g)
+      Serial.print(values[5] / 1000.0f, 3); Serial.print(",");      // accel_z_g (mg → g)
+      Serial.print(values[6] / 100.0f, 2); Serial.print(",");       // gyro_x_dps (0.01 dps → dps)
+      Serial.print(values[7] / 100.0f, 2); Serial.print(",");       // gyro_y_dps (0.01 dps → dps)
+      Serial.print(values[8] / 100.0f, 2); Serial.print(",");       // gyro_z_dps (0.01 dps → dps)
+      Serial.print(values[9] / 10.0f, 1); Serial.print(",");        // mag_x_uT (0.1 μT → μT)
+      Serial.print(values[10] / 10.0f, 1); Serial.print(",");       // mag_y_uT (0.1 μT → μT)
+      Serial.print(values[11] / 10.0f, 1); Serial.print(",");       // mag_z_uT (0.1 μT → μT)
+      Serial.print(values[12] / 10000000.0f, 7); Serial.print(","); // lat_deg (1e7 → degrees)
+      Serial.print(values[13] / 10000000.0f, 7);                    // lon_deg (1e7 → degrees)
+      Serial.println();
+    }
+  } 
+  else if (commaCount == 3) {  // RECOVERY format
+    // Parse all 4 values
+    long values[4];
+    int valueIndex = 0;
+    char* token = strtok(payload, ",");
+    
+    while (token != NULL && valueIndex < 4) {
+      values[valueIndex++] = atol(token);
+      token = strtok(NULL, ",");
+    }
+    
+    // Apply scaling and print CSV line
+    if (valueIndex == 4) {
+      // Values: timestamp, lat, lon, alt
+      Serial.print(values[0]); Serial.print(",");                  // timestamp_ms (raw)
+      Serial.print(values[1] / 10000000.0f, 7); Serial.print(","); // lat_deg (1e7 → degrees)
+      Serial.print(values[2] / 10000000.0f, 7); Serial.print(","); // lon_deg (1e7 → degrees)
+      Serial.print(values[3] / 100.0f, 2);                         // alt_m (cm → m)
+      Serial.println();
+    }
+  }
+}
+
 // Function to handle received LoRa packets
 void handleLoraPacket(LoraPacket* packet) {
   // Process packet
@@ -34,7 +145,8 @@ void handleLoraPacket(LoraPacket* packet) {
     msgBuffer[packet->len] = '\0'; // Ensure null termination
     
     Serial.println(msgBuffer);
-      // Show RSSI info
+    
+    // Show RSSI info
     char buffer[64];
     float snr = loraManager.getLastSnr();
     int rssi = loraManager.getLastRssi();
@@ -45,15 +157,28 @@ void handleLoraPacket(LoraPacket* packet) {
     } else {
       snprintf(buffer, sizeof(buffer), "<RSSI:%d,SNR:>", rssi);
     }
-    Serial.println(buffer);
-  }
-  else if (packet->type == LORA_TYPE_TELEM) {
-    // Telemetry from FC - forward to Serial
+    Serial.println(buffer);  }  else if (packet->type == LORA_TYPE_TELEM) {
+    // Telemetry from FC - process and output as CSV
     char msgBuffer[LORA_MAX_PACKET_SIZE + 1]; // +1 for null terminator
     memcpy(msgBuffer, packet->data, packet->len);
     msgBuffer[packet->len] = '\0'; // Ensure null termination
     
-    Serial.println(msgBuffer);
+    // Debug telemetry reception with RSSI information
+    char debugBuffer[64];
+    snprintf(debugBuffer, sizeof(debugBuffer), 
+             "<DEBUG:TELEM_RECEIVED:RSSI=%d,LEN=%u>", 
+             loraManager.getLastRssi(), packet->len);
+    Serial.println(debugBuffer);
+    
+    // Always show the raw frame for debug purposes
+    Serial.print("<RAW_TELEM:");
+    Serial.print(msgBuffer);
+    Serial.println(">");
+    
+    // Parse telemetry data and output as CSV if enabled
+    if (outputCsvFormat) {
+      parseTelemToCsv(msgBuffer);
+    }
   }
   else if (packet->type == LORA_TYPE_STATUS) {
     // Status messages from FC - forward to Serial
@@ -97,8 +222,21 @@ void processSerialInput() {
   if (cmdReady) {
     Serial.println(); // New line after command
     
+    // Check for local commands that don't get sent to FC
+    if (strcmp(cmdBuffer, "CSV_ON") == 0) {
+      outputCsvFormat = true;
+      csvHeaderPrinted = false; // Reset to print header on next telemetry
+      Serial.println("<GS:CSV_FORMAT_ENABLED>");
+    }
+    else if (strcmp(cmdBuffer, "CSV_OFF") == 0) {
+      outputCsvFormat = false;
+      Serial.println("<GS:CSV_FORMAT_DISABLED>");
+    }
+    else if (strcmp(cmdBuffer, "HELP") == 0) {
+      printHelp();
+    }
     // Look for command framing - if not properly framed, add it
-    if (strncmp(cmdBuffer, "<CMD:", 5) != 0 || cmdBuffer[cmdIndex - 1] != '>') {
+    else if (strncmp(cmdBuffer, "<CMD:", 5) != 0 || cmdBuffer[cmdIndex - 1] != '>') {
       // Not a properly framed command, frame it
       char framedCmd[LORA_MAX_PACKET_SIZE];
       snprintf(framedCmd, sizeof(framedCmd), "<CMD:%s>", cmdBuffer);
@@ -144,6 +282,10 @@ void printHelp() {
   Serial.println("  <CMD:NAVC_RESET_STATS>   - Reset NAVC packet statistics");
   Serial.println("  <CMD:LORA_RESET_STATS>   - Reset LoRa statistics counters");
   Serial.println("  <CMD:LORA_STATS>         - Show detailed LoRa statistics");
+  Serial.println("Local commands:");
+  Serial.println("  CSV_ON                   - Enable CSV output format for telemetry");
+  Serial.println("  CSV_OFF                  - Display raw telemetry frames");
+  Serial.println("  HELP                     - Show this help message");
   Serial.println("Type command and press Enter to send");
   Serial.println("Commands are automatically framed if needed\n");
 }

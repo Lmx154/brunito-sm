@@ -16,6 +16,7 @@ private:
     // Statistics
     uint32_t packetsSent;
     uint32_t packetsDropped;
+    unsigned long lastTransmitTime;
     
     // Helper methods
     bool queueIsFull() const;
@@ -29,11 +30,11 @@ public:
     
     // Send all queued packets
     void sendQueuedPackets();
-    
-    // Get statistics
+      // Get statistics
     uint32_t getPacketsSent() const;
     uint32_t getPacketsDropped() const;
     float getPacketLossRate() const;
+    uint8_t getQueueSize() const; // Add method to get current queue size
     
     // Reset statistics
     void resetStats();

@@ -17,6 +17,11 @@ private:
     uint8_t receiveBuffer[128];
     size_t receiveBufferIndex;
     
+    // Buffer for examined data that needs to be processed
+    uint8_t examinedBuffer[16];
+    size_t examinedBufferIndex;
+    size_t examinedBufferSize;
+    
     // Size of expected packet
     const size_t packetSize;
     
@@ -48,8 +53,7 @@ public:
     
     // Mark the packet as processed
     void markPacketProcessed();
-    
-    // Get statistics
+      // Get statistics
     uint32_t getPacketsReceived() const;
     uint32_t getPacketsDropped() const;
     uint32_t getCrcErrors() const;
@@ -61,6 +65,9 @@ public:
     
     // Send commands to NAVC
     bool sendCommand(const char* cmd);
+    
+    // Store a byte examined from Serial for later processing
+    void storeExaminedByte(uint8_t byte);
 };
 
 #endif // UART_MANAGER_H
