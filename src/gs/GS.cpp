@@ -34,11 +34,17 @@ void handleLoraPacket(LoraPacket* packet) {
     msgBuffer[packet->len] = '\0'; // Ensure null termination
     
     Serial.println(msgBuffer);
-    
-    // Show RSSI info
+      // Show RSSI info
     char buffer[64];
-    snprintf(buffer, sizeof(buffer), "<RSSI:%d,SNR:%.2f>", 
-             loraManager.getLastRssi(), loraManager.getLastSnr());
+    float snr = loraManager.getLastSnr();
+    int rssi = loraManager.getLastRssi();
+    
+    // Check if SNR is valid
+    if (snr != 0) {
+      snprintf(buffer, sizeof(buffer), "<RSSI:%d,SNR:%.2f>", rssi, snr);
+    } else {
+      snprintf(buffer, sizeof(buffer), "<RSSI:%d,SNR:>", rssi);
+    }
     Serial.println(buffer);
   }
   else if (packet->type == LORA_TYPE_TELEM) {
@@ -246,10 +252,16 @@ void loop() {
           uint8_t minutes = seconds / 60;
           seconds %= 60;
           snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", hours, minutes, (uint8_t)seconds);
-          
-          char buffer[128];
-          snprintf(buffer, sizeof(buffer), "<GS_LINK:%s,RSSI:%d,SNR:%.1f,PKT_SENT:%u,PKT_RECV:%u,LOSS:%s%%,LAST_RX:%s>", 
-                  linkQuality.c_str(), rssi, snr, sent, received, lossRateStr, timeStr);
+            char buffer[128];
+          // Check if SNR value is valid (RFM95 returns 0 SNR when no packets received)
+          if (received > 0 && snr != 0) {
+            snprintf(buffer, sizeof(buffer), "<GS_LINK:%s,RSSI:%d,SNR:%.1f,PKT_SENT:%u,PKT_RECV:%u,LOSS:%s%%,LAST_RX:%s>", 
+                    linkQuality.c_str(), rssi, snr, sent, received, lossRateStr, timeStr);
+          } else {
+            // No valid SNR, omit it from output
+            snprintf(buffer, sizeof(buffer), "<GS_LINK:%s,RSSI:%d,SNR:,PKT_SENT:%u,PKT_RECV:%u,LOSS:%s%%,LAST_RX:%s>", 
+                    linkQuality.c_str(), rssi, sent, received, lossRateStr, timeStr);
+          }
           Serial.println(buffer);
           
           // Reset statistics every hour to avoid overflow

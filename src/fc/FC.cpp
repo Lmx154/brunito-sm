@@ -78,14 +78,26 @@ void cmdTask() {
           
           // Also create a separate message just for the GS
           char buffer[128];
-          snprintf(buffer, sizeof(buffer), 
-                  "<CMD_ACK:OK:LORA_STATS,RSSI:%d,SNR:%.1f,TX:%u,RX:%u,LOST:%u,LOSS:%.1f%%>",
-                  loraManager.getLastRssi(),
-                  loraManager.getLastSnr(),
-                  loraManager.getPacketsSent(),
-                  loraManager.getPacketsReceived(),
-                  loraManager.getPacketsLost(),
-                  loraManager.getPacketLossRate() * 100.0f);
+          float snr = loraManager.getLastSnr();
+          int rssi = loraManager.getLastRssi();
+          
+          if (snr != 0) {
+            snprintf(buffer, sizeof(buffer), 
+                    "<CMD_ACK:OK:LORA_STATS,RSSI:%d,SNR:%.1f,TX:%u,RX:%u,LOST:%u,LOSS:%.1f%%>",
+                    rssi, snr,
+                    loraManager.getPacketsSent(),
+                    loraManager.getPacketsReceived(),
+                    loraManager.getPacketsLost(),
+                    loraManager.getPacketLossRate() * 100.0f);
+          } else {
+            snprintf(buffer, sizeof(buffer), 
+                    "<CMD_ACK:OK:LORA_STATS,RSSI:%d,SNR:,TX:%u,RX:%u,LOST:%u,LOSS:%.1f%%>",
+                    rssi,
+                    loraManager.getPacketsSent(),
+                    loraManager.getPacketsReceived(),
+                    loraManager.getPacketsLost(),
+                    loraManager.getPacketLossRate() * 100.0f);
+          }
           
           // Send to GS
           if (loraManager.isInitialized()) {
