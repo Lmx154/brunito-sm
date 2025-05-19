@@ -10,6 +10,9 @@ UartManager::UartManager() :
     packetsReceived(0),
     packetsDropped(0),
     crcErrors(0),
+    missedPackets(0),
+    lastPacketId(0),
+    firstPacket(true),
     lastPacketTime(0)
 {
     // Initialize buffers
@@ -61,20 +64,35 @@ UartPacketStatus UartManager::processUartData() {
             
             // Reset buffer index for next packet
             receiveBufferIndex = 0;
-            
-            // Verify packet CRC
+              // Verify packet CRC
             if (verifyCrc16(latestPacket)) {
                 // Valid packet received
                 packetsReceived++;
                 lastPacketTime = millis();
                 packetReady = true;
                 
-                // Debug - log successful packet
-                char logBuffer[64];
-                snprintf(logBuffer, sizeof(logBuffer), 
-                         "<DEBUG:PACKET_RECV:ID=%u,ALT=%ld>",
-                         latestPacket.packetId, latestPacket.altitude);
-                Serial.println(logBuffer);
+                // Track packet IDs to detect missed packets
+                if (firstPacket) {
+                    // Initialize with first packet
+                    firstPacket = false;
+                    lastPacketId = latestPacket.packetId;
+                } else {                    // Calculate expected vs actual difference in packet IDs
+                    uint16_t expectedDiff = 1;
+                    uint16_t actualDiff = (latestPacket.packetId - lastPacketId) & 0xFFFF; // Handle wrap-around
+                    
+                    // Check for missed packets with a more robust approach
+                    // Only count if difference is reasonable (less than 100) to avoid false positives
+                    // from packet ID resets or other unexpected conditions
+                    if (actualDiff > expectedDiff && actualDiff < 100) {
+                        missedPackets += (actualDiff - expectedDiff);
+                        
+                        // Removed packet loss debug logging as it's causing more problems than it solves
+                        // No need to log missed packets anymore
+                    }
+                    
+                    lastPacketId = latestPacket.packetId;
+                }
+                  // No longer logging every successfully received packet to reduce log verbosity
                 
                 return PACKET_COMPLETE;
             } else {
@@ -116,6 +134,16 @@ uint32_t UartManager::getCrcErrors() const {
     return crcErrors;
 }
 
+uint32_t UartManager::getMissedPackets() const {
+    return missedPackets;
+}
+
+float UartManager::getPacketLossRate() const {
+    uint32_t totalExpected = packetsReceived + missedPackets;
+    if (totalExpected == 0) return 0.0f;
+    return (float)missedPackets / (float)totalExpected * 100.0f;
+}
+
 float UartManager::getPacketRate() const {
     // Calculate packets per second
     unsigned long runtime = millis();
@@ -133,6 +161,8 @@ void UartManager::resetStats() {
     packetsReceived = 0;
     packetsDropped = 0;
     crcErrors = 0;
+    missedPackets = 0;
+    firstPacket = true;
 }
 
 bool UartManager::sendCommand(const char* cmd) {

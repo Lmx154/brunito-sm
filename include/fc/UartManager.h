@@ -28,11 +28,13 @@ private:
     // Latest received packet
     SensorPacket latestPacket;
     bool packetReady;
-    
-    // Statistics
+      // Statistics
     uint32_t packetsReceived;
     uint32_t packetsDropped;
     uint32_t crcErrors;
+    uint32_t missedPackets;  // Tracks packets missed due to non-sequential IDs
+    uint16_t lastPacketId;   // Last successfully received packet ID
+    bool firstPacket;        // Flag for first packet initialization
     unsigned long lastPacketTime;
     
     // Verify packet CRC
@@ -52,11 +54,12 @@ public:
     const SensorPacket& getLatestPacket() const;
     
     // Mark the packet as processed
-    void markPacketProcessed();
-      // Get statistics
+    void markPacketProcessed();    // Get statistics
     uint32_t getPacketsReceived() const;
     uint32_t getPacketsDropped() const;
     uint32_t getCrcErrors() const;
+    uint32_t getMissedPackets() const;
+    float getPacketLossRate() const;
     float getPacketRate() const;
     unsigned long getTimeSinceLastPacket() const;
     

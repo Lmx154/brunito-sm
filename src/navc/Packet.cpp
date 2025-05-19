@@ -1,4 +1,5 @@
 #include "../include/navc/Packet.h"
+#include "../include/utils/FrameCodec.h"
 #include <Arduino.h>
 #include <HardwareSerial.h>
 
@@ -26,40 +27,46 @@ bool PacketManager::enqueuePacket(const SensorPacket& packet) {
 }
 
 void PacketManager::sendQueuedPackets() {
-    // Apply rate limiting to avoid overwhelming the FC (max 25Hz instead of 50Hz)
-    // This helps prevent buffer overruns in the FC
+    // Apply even more conservative rate limiting to ensure stable flow
+    // This prevents buffer overruns and CRC errors in the FC
     unsigned long currentTime = millis();
-    if (currentTime - lastTransmitTime < 40) { // 40ms = 25Hz max
+    if (currentTime - lastTransmitTime < 50) { // 50ms = 20Hz max
         return;
     }
     
-    // Limit number of packets sent per call to avoid blocking too long
-    // This prevents FC freezing by ensuring we don't spend too much time
-    // transmitting in one go
-    int packetsSentThisCall = 0;
-    const int MAX_PACKETS_PER_CALL = 2; // Maximum 2 packets per call
+    // Check if there's enough data in the queue to make sending worthwhile
+    // This helps prevent sending partial or corrupted packets
+    if (queueIsEmpty()) {
+        return;
+    }
     
-    // Send queued packets over UART with limits
+    // Only send one packet per call to reduce UART transfer issues
+    // This avoids potential timing issues that could lead to packet corruption
+    const int MAX_PACKETS_PER_CALL = 1; // Maximum 1 packet per call
+    int packetsSentThisCall = 0;
+    
+    // Send queued packets over UART with strict limits
     while (!queueIsEmpty() && packetsSentThisCall < MAX_PACKETS_PER_CALL) {
         // Get next packet from queue
         SensorPacket& packet = packetQueue[queueHead];
         
-        // Send packet over Serial2 (UART to FC)
-        size_t bytesWritten = Serial2.write(reinterpret_cast<const uint8_t*>(&packet), sizeof(SensorPacket));
+        // Recompute CRC right before sending to ensure integrity
+        packet.crc16 = FrameCodec::calculateSensorPacketCRC(
+            reinterpret_cast<const uint8_t*>(&packet), 
+            sizeof(SensorPacket)
+        );
         
-        // Update statistics only if successful
-        if (bytesWritten == sizeof(SensorPacket)) {
-            packetsSent++;
-            packetsSentThisCall++;
-        } else {
-            packetsDropped++;
-        }
+        // Send packet over Serial2 (UART to FC) with complete flush
+        Serial2.write(reinterpret_cast<const uint8_t*>(&packet), sizeof(SensorPacket));
+        Serial2.flush(); // Ensure reliable transmission by waiting for completion
+        
+        // Update statistics and timing
+        packetsSent++;
+        packetsSentThisCall++;
+        lastTransmitTime = currentTime;
         
         // Move head forward
         queueHead = (queueHead + 1) % PACKET_QUEUE_SIZE;
-        
-        // Apply full buffer flush after each packet to ensure reliable transmission
-        Serial2.flush();
     }
     
     // Only update last transmit time if we actually sent something

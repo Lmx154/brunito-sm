@@ -729,18 +729,7 @@ bool SensorManager::updateWithDiagnostics() {
                     Serial.println(">");
                 }
                   
-                // Log successful mag reading values only periodically
-                static unsigned long lastMagDebugTime = 0;
-                if (millis() - lastMagDebugTime > 5000) { // Every 5 seconds
-                    Serial.print("<DEBUG:MAG_VALUES:X=");
-                    Serial.print(mag.mag_data.x);
-                    Serial.print(",Y=");
-                    Serial.print(mag.mag_data.y);
-                    Serial.print(",Z=");
-                    Serial.print(mag.mag_data.z);
-                    Serial.println(">");
-                    lastMagDebugTime = millis();
-                }
+                // Log successful mag reading values only periodically                // Magnetometer values are already included in telemetry data - no need for separate reporting
             } else {
                 // All zeros despite reading - could be sensor issue
                 Serial.println("<DEBUG:MAG_ALL_ZEROS_DESPITE_READ>");

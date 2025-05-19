@@ -29,25 +29,47 @@ unsigned long lastLoraCheck = 0;
 unsigned long lastBandwidthCheck = 0;
 const unsigned long BANDWIDTH_CHECK_INTERVAL = 60000; // Check bandwidth every 60 seconds
 
+// Removed packet loss tracking variables as they're causing more problems than they solve
+
 // CSV output control (disabled by default now)
 bool outputCsvFormat = false;
 bool csvHeaderPrinted = false;
+
+// Helper function to count commas in a string
+int countCommas(const char* str) {
+  int count = 0;
+  while (*str) {
+    if (*str == ',') count++;
+    str++;
+  }
+  return count;
+}
 
 /**
  * Parse telemetry frame and output as CSV
  * 
  * @param frame The telemetry frame string
  */
-void parseTelemToCsv(const char* frame) {
-  // Verify it's a TELEM frame
-  if (strncmp(frame, "<TELEM:", 7) != 0) {
+void parseTelemToCsv(const char* frame) {  // Verify it's a TELEM frame (either full or shortened format)
+  bool isTelemFrame = false;
+  int prefixLength = 0;
+  
+  if (strncmp(frame, "<TELEM:", 7) == 0) {
+    isTelemFrame = true;
+    prefixLength = 7; // Skip "<TELEM:"
+  } else if (strncmp(frame, "<T:", 3) == 0) {
+    isTelemFrame = true;
+    prefixLength = 3; // Skip "<T:"
+  }
+  
+  if (!isTelemFrame) {
     Serial.println("<DEBUG:NOT_TELEM_FRAME>");
     return;
   }
   
   // Extract payload between : and >
   char payload[LORA_MAX_PACKET_SIZE];
-  size_t i = 7;  // Skip "<TELEM:"
+  size_t i = prefixLength;  // Skip prefix
   size_t p = 0;
   
   while (frame[i] != '>' && frame[i] != '\0' && p < sizeof(payload) - 1) {
@@ -151,7 +173,9 @@ void handleLoraPacket(LoraPacket* packet) {
     } else {
       snprintf(buffer, sizeof(buffer), "<RSSI:%d,SNR:>", rssi);
     }
-    Serial.println(buffer);  }  else if (packet->type == LORA_TYPE_TELEM) {
+    Serial.println(buffer);
+  }
+  else if (packet->type == LORA_TYPE_TELEM) {
     // Telemetry from FC - just display raw telemetry
     char msgBuffer[LORA_MAX_PACKET_SIZE + 1]; // +1 for null terminator
     memcpy(msgBuffer, packet->data, packet->len);
@@ -162,7 +186,7 @@ void handleLoraPacket(LoraPacket* packet) {
     int16_t rssi = loraManager.getLastRssi();
     float snr = loraManager.getLastSnr();
     
-    // Add rate throttling indicator to help user understand if packets are being throttled
+    // Add rate throttling indicator to help user understand if packets are being throttled    // Rate indicator still needed for other functions
     const char* rateIndicator = "NORMAL";
     if (rssi < -110) {
         rateIndicator = "THROTTLED_4HZ";
@@ -170,13 +194,36 @@ void handleLoraPacket(LoraPacket* packet) {
         rateIndicator = "THROTTLED_10HZ";
     }
     
-    snprintf(debugBuffer, sizeof(debugBuffer), 
-             "<DEBUG:TELEM_RECEIVED:RSSI=%d,SNR=%.1f,LEN=%u,RATE=%s>", 
-             rssi, snr, packet->len, rateIndicator);
-    Serial.println(debugBuffer);
+    // DEBUG:TELEM_RECEIVED messages removed to reduce log verbosity
+      // Track packet IDs to detect lost packets
+    if (msgBuffer[0] == '<' && (strncmp(msgBuffer, "<TELEM:", 7) == 0 || strncmp(msgBuffer, "<T:", 3) == 0)) {
+      // Parse packet ID from telemetry data - handle both formats (TELEM and T)
+      char* payload;
+      if (strncmp(msgBuffer, "<TELEM:", 7) == 0) {
+        payload = msgBuffer + 7; // Skip "<TELEM:"
+      } else {
+        payload = msgBuffer + 3; // Skip "<T:"
+      }
+      
+      char* firstComma = strchr(payload, ',');
+      
+      if (firstComma != NULL) {
+        // Extract first value as packetID
+        *firstComma = '\0'; // Temporarily terminate string at comma
+        uint16_t currentPacketId = atoi(payload);
+        *firstComma = ','; // Restore the comma
+        
+        // We're no longer tracking packet loss but still process the ID for potential future use
+      }
+    }
     
     // Display the raw telemetry directly without additional tags
     Serial.println(msgBuffer);
+    
+    // If CSV output is enabled, also parse and output as CSV
+    if (outputCsvFormat) {
+      parseTelemToCsv(msgBuffer);
+    }
   }
   else if (packet->type == LORA_TYPE_STATUS) {
     // Status messages from FC - forward to Serial
@@ -319,22 +366,21 @@ void setup() {
 void loop() {
   // Process any incoming serial data
   processSerialInput();
-  
-  // Process LoRa communication
+    // Process LoRa communication
   unsigned long now = millis();
-  if (now - lastLoraCheck >= 10) { // Check LoRa every 10ms
+  if (now - lastLoraCheck >= 5) { // Check LoRa every 5ms (reduced from 10ms) for faster telemetry reception
     lastLoraCheck = now;
     
-    // Check for received packets first - this gives us a chance to process ACKs
+    // Check for received packets first - this gives us a chance to process telemetry
     loraManager.checkReceived();
     
-    // Give a small delay to allow for ACK processing
-    delay(5);
-      // Process queue (send pending packets, retry failed ones)
+    // Process queue (send pending packets, retry failed ones)
     loraManager.checkQueue();
     
     // Send ping to check link quality
     loraManager.sendPing();
+      // Removed packet loss reporting as it's causing more problems than it solves
+    // No need to track and report telemetry packet loss statistics
     
     // Periodically monitor bandwidth usage
     if (now - lastBandwidthCheck >= BANDWIDTH_CHECK_INTERVAL) {
@@ -350,20 +396,20 @@ void loop() {
       if (received > lastPacketCount) {
         packetsSinceLastCheck = received - lastPacketCount;
       }
-      
-      float interval = (now - lastRateCheckTime) / 1000.0f;
+        float interval = (now - lastRateCheckTime) / 1000.0f;
       if (interval > 0.1f) { // Avoid division by near-zero
         float packetsPerSecond = packetsSinceLastCheck / interval;
         
-        // Only report if we got some packets
-        if (packetsSinceLastCheck > 0) {
+        // Only report bandwidth info if we got some packets
+        if (packetsSinceLastCheck > 0) {          // Calculate approximate bandwidth in bytes/sec
+          float bytesPerSec = packetsPerSecond * loraManager.getAveragePacketSize();
           char rateBuffer[80];
           snprintf(rateBuffer, sizeof(rateBuffer), 
-                  "<DEBUG:TELEM_RATE:%.1f_Hz,RSSI=%d,THROTTLING=%s>", 
-                  packetsPerSecond, 
+                  "<DEBUG:BANDWIDTH:%.1f_Hz,%.1f_B/s,RSSI=%d,SNR=%.1f>", 
+                  packetsPerSecond,
+                  bytesPerSec,
                   loraManager.getLastRssi(),
-                  (loraManager.getLastRssi() < -110 ? "YES" : 
-                   (loraManager.getLastRssi() < -100 ? "PARTIAL" : "NO")));
+                  loraManager.getLastSnr());
           Serial.println(rateBuffer);
         }
       }
@@ -410,33 +456,22 @@ void loop() {
           } else {
             linkQuality = "POOR";
             heartbeat.setPattern(HB_RECOVERY); // Very fast blink for bad connection
-          }
-            // Format the loss rate string properly or use "0.0" to avoid a bare %
+          }            // Format the loss rate string properly or use "0.0" to avoid a bare %
           char lossRateStr[16];
           if (sent > 0) {
             snprintf(lossRateStr, sizeof(lossRateStr), "%.1f", lossRate);
           } else {
             strcpy(lossRateStr, "0.0");
           }
-          
-          // Include last received time in HH:MM:SS format
-          char timeStr[16];
-          uint32_t timeSinceLastRx = loraManager.getTimeSinceLastRx();
-          uint32_t seconds = timeSinceLastRx / 1000;
-          uint8_t hours = seconds / 3600;
-          seconds %= 3600;
-          uint8_t minutes = seconds / 60;
-          seconds %= 60;
-          snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", hours, minutes, (uint8_t)seconds);
-            char buffer[128];
-          // Check if SNR value is valid (RFM95 returns 0 SNR when no packets received)
+            // LAST_RX field removed to reduce log verbosity
+          char buffer[128];          // Check if SNR value is valid (RFM95 returns 0 SNR when no packets received)
           if (received > 0 && snr != 0) {
-            snprintf(buffer, sizeof(buffer), "<GS_LINK:%s,RSSI:%d,SNR:%.1f,PKT_SENT:%u,PKT_RECV:%u,LOSS:%s%%,LAST_RX:%s>", 
-                    linkQuality.c_str(), rssi, snr, sent, received, lossRateStr, timeStr);
+            snprintf(buffer, sizeof(buffer), "<GS_LINK:%s,RSSI:%d,SNR:%.1f,PKT_SENT:%u,PKT_RECV:%u,LOSS:%s%%>", 
+                    linkQuality.c_str(), rssi, snr, sent, received, lossRateStr);
           } else {
             // No valid SNR, omit it from output
-            snprintf(buffer, sizeof(buffer), "<GS_LINK:%s,RSSI:%d,SNR:,PKT_SENT:%u,PKT_RECV:%u,LOSS:%s%%,LAST_RX:%s>", 
-                    linkQuality.c_str(), rssi, sent, received, lossRateStr, timeStr);
+            snprintf(buffer, sizeof(buffer), "<GS_LINK:%s,RSSI:%d,SNR:,PKT_SENT:%u,PKT_RECV:%u,LOSS:%s%%>", 
+                    linkQuality.c_str(), rssi, sent, received, lossRateStr);
           }
           Serial.println(buffer);
           

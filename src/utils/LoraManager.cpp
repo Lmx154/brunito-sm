@@ -41,6 +41,7 @@ LoraManager::LoraManager() :
     packetsLost(0),
     lastStatsResetTime(0),
     totalBytesSent(0),
+    totalBytesReceived(0),
     lastReceivedTime(millis()), // Initialize to current time to avoid showing link down on startup
     connectionTimeout(30000),   // Default timeout of 30 seconds
     pingEnabled(false),         // Ping disabled by default
@@ -162,14 +163,20 @@ bool LoraManager::sendPacket(uint8_t type, const char* data, size_t len) {
     // Copy data, ensuring we don't overflow
     size_t copyLen = min(len, sizeof(packet.data));
     memcpy(packet.data, data, copyLen);
-    packet.len = copyLen;    // Add to queue
+    packet.len = copyLen;
+
+    // Add to queue
     memcpy(&outQueue[slot], &packet, sizeof(packet));
     queueActive[slot] = true;
-      // Set retry behavior based on packet type
-    // STATUS, PING, and PONG packets (fire-and-forget): no retries (0)
-    // Other packets: normal retry behavior (LORA_MAX_RETRIES)
-    if (type == LORA_TYPE_STATUS || type == LORA_TYPE_PING || type == LORA_TYPE_PONG) {
-        queueRetries[slot] = 0;  // No retries for status and ping/pong packets
+
+    // Set retry behavior based on packet type
+    // No acknowledgments and no retries for:
+    // - STATUS packets (status information)
+    // - PING/PONG packets (link quality test)
+    // - TELEM packets (telemetry data)
+    if (type == LORA_TYPE_STATUS || type == LORA_TYPE_PING || 
+        type == LORA_TYPE_PONG || type == LORA_TYPE_TELEM) {
+        queueRetries[slot] = 0;  // No retries for these packet types
     } else {
         queueRetries[slot] = LORA_MAX_RETRIES;
     }
@@ -213,9 +220,9 @@ void LoraManager::checkReceived() {
         rssi = radio.getRSSI();
         snr = radio.getSNR();
           // Process packet if received successfully
-        if (state == RADIOLIB_ERR_NONE) {
-            // Update statistics (only for non-ACK packets)
+        if (state == RADIOLIB_ERR_NONE) {            // Update statistics (only for non-ACK packets)
             packetsReceived++;
+            totalBytesReceived += len; // Track total bytes received
             
             LoraPacket packet;
             if (decodePacket(buffer, len, &packet)) {
@@ -233,9 +240,51 @@ void LoraManager::checkQueue() {
     
     uint32_t now = millis();
     
-    // Check for packets in queue that need to be sent
+    // First priority: Process telemetry packets first as they are time-sensitive
+    // Look for telemetry packets first to prioritize them
     for (int i = 0; i < QUEUE_SIZE; i++) {
-        if (queueActive[i] && now >= queueRetryTime[i]) {
+        if (queueActive[i] && now >= queueRetryTime[i] && outQueue[i].type == LORA_TYPE_TELEM) {
+            // Encode packet
+            uint8_t buffer[LORA_MAX_PACKET_SIZE];
+            size_t size;
+            
+            if (encodePacket(&outQueue[i], buffer, &size)) {
+                // Cancel receive mode and send packet
+                radio.standby();
+                
+                // In RadioLib 7.1.2, transmit takes an array and length
+                int state = radio.transmit(buffer, size);
+                
+                // Update statistics
+                packetsSent++;
+                
+                // Log transmission (but more concise for telemetry to reduce overhead)
+                char logBuffer[64];
+                snprintf(logBuffer, sizeof(logBuffer), "LoRa TX: type=%d, id=%d, retry=%d", 
+                        outQueue[i].type, outQueue[i].id, queueRetries[i]);
+                Serial.println(logBuffer);
+                
+                if (state == RADIOLIB_ERR_NONE) {
+                    // Track bytes and free queue slot immediately (fire-and-forget)
+                    totalBytesSent += outQueue[i].len + 6;
+                    queueActive[i] = false;
+                    
+                    // Restart receiver and return immediately to process more telemetry
+                    radio.startReceive();
+                    return; // Process one telemetry packet then check for reception
+                } else {
+                    // On failure, just remove telemetry packet (it's outdated anyway)
+                    queueActive[i] = false;
+                    radio.startReceive();
+                    return;
+                }
+            }
+        }
+    }
+    
+    // Second priority: Process other packets
+    for (int i = 0; i < QUEUE_SIZE; i++) {
+        if (queueActive[i] && now >= queueRetryTime[i] && outQueue[i].type != LORA_TYPE_TELEM) {
             // Encode packet
             uint8_t buffer[LORA_MAX_PACKET_SIZE];
             size_t size;
@@ -251,21 +300,23 @@ void LoraManager::checkQueue() {
                 if (outQueue[i].type != LORA_TYPE_ACK) { // Don't count ACKs in the statistics
                     packetsSent++;
                 }
-                  // Log transmission attempt (but skip detailed logging for ping/pong packets)
+                
+                // Log transmission attempt (but skip detailed logging for ping/pong packets)
                 if (outQueue[i].type != LORA_TYPE_PING && outQueue[i].type != LORA_TYPE_PONG) {
                     char logBuffer[64];
                     snprintf(logBuffer, sizeof(logBuffer), "LoRa TX: type=%d, id=%d, retry=%d", 
                             outQueue[i].type, outQueue[i].id, queueRetries[i]);
                     Serial.println(logBuffer);
-                }                // Handle transmission result
+                }// Handle transmission result
                 if (state == RADIOLIB_ERR_NONE) {
                     // Track bytes sent for bandwidth monitoring (add header size + data)
                     totalBytesSent += outQueue[i].len + 6; // 6 bytes for header
-                
-                    // Different handling based on packet type
+                      // Different handling based on packet type
                     if (outQueue[i].type == LORA_TYPE_ACK || outQueue[i].type == LORA_TYPE_STATUS || 
-                        outQueue[i].type == LORA_TYPE_PING || outQueue[i].type == LORA_TYPE_PONG) {
-                        // No need to wait for ACKs on ACK packets, STATUS messages, or ping/pong, remove from queue immediately
+                        outQueue[i].type == LORA_TYPE_PING || outQueue[i].type == LORA_TYPE_PONG ||
+                        outQueue[i].type == LORA_TYPE_TELEM) {
+                        // No need to wait for ACKs on ACK packets, STATUS messages, telemetry data, or ping/pong
+                        // Remove from queue immediately (fire-and-forget)
                         queueActive[i] = false;
                     } else {
                         // For all other packet types, handle retries
@@ -280,12 +331,37 @@ void LoraManager::checkQueue() {
                         if (queueRetries[i] >= maxRetries) {
                             // If this is the exact retry when we hit max retries, set a grace period
                             if (queueRetries[i] == maxRetries) {
-                                // Add grace period for ACK to arrive (1.5 × LORA_ACK_TIMEOUT_MS)
-                                queueRetryTime[i] = now + (LORA_ACK_TIMEOUT_MS * 3 / 2);
+                                // Adaptive timeout based on link quality
+                                uint32_t ackTimeout = LORA_ACK_TIMEOUT_MS;
+                                
+                                #if LORA_ADAPTIVE_TIMEOUT
+                                // Adjust timeout based on RSSI value
+                                if (rssi < -110) {
+                                    // Very poor connection - use longer timeout
+                                    ackTimeout = LORA_ACK_TIMEOUT_MS * 2;
+                                } else if (rssi < -100) {
+                                    // Poor connection - increase timeout
+                                    ackTimeout = LORA_ACK_TIMEOUT_MS * 3 / 2;
+                                }
+                                
+                                // Also adjust based on number of pending packets
+                                uint8_t pendingCount = getPendingPacketCount();
+                                if (pendingCount > QUEUE_SIZE / 2) {
+                                    // Queue is getting full, increase timeout to reduce congestion
+                                    ackTimeout += (pendingCount * 100); // Add 100ms per pending packet
+                                }
+                                #endif
+                                
+                                // Add grace period for ACK to arrive
+                                queueRetryTime[i] = now + ackTimeout;
                                 
                                 // Only log for packets other than ping/pong
                                 if (outQueue[i].type != LORA_TYPE_PING && outQueue[i].type != LORA_TYPE_PONG) {
-                                    Serial.println("LoRa TX: Max retries reached, waiting for ACK");
+                                    char logBuffer[64];
+                                    snprintf(logBuffer, sizeof(logBuffer), 
+                                           "LoRa TX: Max retries reached, waiting for ACK (timeout: %lu ms)", 
+                                           ackTimeout);
+                                    Serial.println(logBuffer);
                                 }
                                 
                                 // Increment retry counter beyond max to indicate we're in grace period
@@ -307,19 +383,48 @@ void LoraManager::checkQueue() {
                             // First transmit was already done, increment retry counter for next attempt
                             queueRetries[i]++;
                             
-                            // Use a more moderate exponential backoff formula
-                            // This provides more reasonable timing between retries
-                            // 1st retry: BASE_MS, 2nd: BASE_MS*1.5, 3rd: BASE_MS*2.25, 4th: BASE_MS*3.375, etc.
-                            uint32_t backoff = LORA_RETRY_BASE_MS;
-                            for (uint8_t j = 1; j < queueRetries[i]; j++) {
-                                backoff = (backoff * 3) / 2;  // 1.5× multiplier each retry
-                            }
-                            queueRetryTime[i] = now + backoff;
+                            // Calculate adaptive backoff time based on link quality and packet type
+                            uint32_t backoffMs = LORA_RETRY_BASE_MS;
                             
-                            // For important commands, add a little randomness to avoid collision
-                            if (outQueue[i].type == LORA_TYPE_CMD) {
-                                queueRetryTime[i] += random(50, 100);
+                            // Adjust for RSSI
+                            if (rssi < -110) {
+                                // Very poor connection - use longer backoff
+                                backoffMs *= 2;
+                            } else if (rssi < -100) {
+                                // Poor connection - increase backoff
+                                backoffMs = (backoffMs * 3) / 2;
                             }
+                            
+                            // Add jitter to avoid collisions when multiple devices retry at the same time
+                            backoffMs += random(0, 100);
+                            
+                            // For telemetry packets, reduce retries to avoid overwhelming the connection
+                            if (outQueue[i].type == LORA_TYPE_TELEM) {
+                                // Use reduced backoff for telemetry to avoid queueing too many packets
+                                backoffMs /= 2;                            } else if (outQueue[i].type == LORA_TYPE_CMD) {
+                                // Critical commands get priority with faster retries
+                                backoffMs *= 0.75;
+                                
+                                // For DISARM (safety critical), retry even faster
+                                if (outQueue[i].len >= 11 && memcmp(outQueue[i].data, "<CMD:DISARM", 11) == 0) {
+                                    backoffMs = LORA_RETRY_BASE_MS / 2;
+                                }
+                            }
+                            
+                            // Apply exponential backoff based on retry count
+                            for (uint8_t j = 1; j < queueRetries[i]; j++) {
+                                backoffMs = (backoffMs * 3) / 2;  // 1.5× multiplier each retry
+                            }
+                            
+                            // Check queue congestion and adjust if needed
+                            uint8_t pendingCount = getPendingPacketCount();
+                            if (pendingCount > QUEUE_SIZE / 2) {
+                                // Add extra backoff proportional to queue congestion
+                                backoffMs += (pendingCount * 50);
+                            }
+                            
+                            // Set the retry time
+                            queueRetryTime[i] = now + backoffMs;
                         }
                     }                } else {
                     // Transmission failed, retry immediately on next check
@@ -483,7 +588,8 @@ void LoraManager::processIncomingPacket(LoraPacket* packet) {
                 onPacketReceived(packet);
             }
             
-            // No ACK needed for telemetry
+            // Explicitly no ACK for telemetry - fire-and-forget
+            // This comment clarifies that we deliberately don't send ACKs for telemetry
             break;
               case LORA_TYPE_STATUS:
             // Forward to callback, but never ACK
@@ -675,15 +781,35 @@ void LoraManager::reportBandwidthUsage() {
     // Avoid division by zero
     if (interval < 0.001f) interval = 0.001f;
     
-    float bytesPerSecond = bytesSinceLast / interval;
+    float bytesPerSecond = bytesSinceLast / interval;    // Properly format the loss rate percentage
+    char lossRateStr[16];
+    snprintf(lossRateStr, sizeof(lossRateStr), "%.1f", getPacketLossRate() * 100.0f);
     
-    char buffer[128];
+    // Calculate average packet size
+    float avgPacketSize = (packetsReceived > 0) ? 
+        ((float)totalBytesReceived / (float)packetsReceived) : 0.0f;
+    
+    // Calculate actual average throughput (including retries, overhead, etc.)
+    float actualThroughput = bytesPerSecond;
+    
+    // Calculate pending packets in queue as a percentage of queue capacity
+    uint8_t pendingCount = getPendingPacketCount();
+    float queueUsage = (float)pendingCount / (float)QUEUE_SIZE * 100.0f;
+    
+    // Create the report
+    char buffer[192]; // Increased buffer size for more data
     snprintf(buffer, sizeof(buffer), 
-            "<DEBUG:BANDWIDTH:BPS=%.1f,TOTAL_BYTES=%lu,PKT_SENT=%u,PKT_LOST=%u,LOSS_RATE=%.1f%%,RSSI=%d,SNR=%.1f>",
-            bytesPerSecond,
-            totalBytes,
-            packetsSent, packetsLost,
-            getPacketLossRate() * 100.0f,
+            "<DEBUG:BANDWIDTH:%.1f_B/s,AVG_PKT=%.1f_B,TOTAL_TX=%lu_B,TOTAL_RX=%lu_B,SENT=%u,RECV=%u,LOST=%u,LOSS=%s%%,QUEUE=%u/%.0f%%,RSSI=%d,SNR=%.1f>",
+            actualThroughput,
+            avgPacketSize,
+            totalBytesSent,
+            totalBytesReceived,
+            packetsSent, 
+            packetsReceived,
+            packetsLost,
+            lossRateStr,
+            pendingCount,
+            queueUsage,
             rssi, snr);
     
     Serial.println(buffer);

@@ -46,14 +46,12 @@ private:
     // Packet tracking
     uint16_t txPacketId;
     uint16_t rxPacketId;
-    
-    // Queue for outgoing messages with retries
-    static const int QUEUE_SIZE = 5;
+      // Queue for outgoing messages with retries
+    static const int QUEUE_SIZE = 12; // Increased from 5 to 12 for better telemetry throughput
     LoraPacket outQueue[QUEUE_SIZE];
     uint32_t queueRetryTime[QUEUE_SIZE];
     uint8_t queueRetries[QUEUE_SIZE];
-    bool queueActive[QUEUE_SIZE];
-      // Status
+    bool queueActive[QUEUE_SIZE];// Status
     bool initialized;
     int16_t rssi;
     float snr;
@@ -63,6 +61,7 @@ private:
     uint16_t packetsLost;
     uint32_t lastStatsResetTime;
     unsigned long totalBytesSent; // Track total bytes sent for bandwidth calculation
+    unsigned long totalBytesReceived; // Track total bytes received for bandwidth calculation
     uint32_t lastReceivedTime;   // Timestamp of last received packet from target
     uint32_t connectionTimeout;  // Time in ms after which connection is considered lost
     
@@ -109,19 +108,33 @@ public:
     void sendPing();
     uint32_t getLastPingTime() const { return lastPingTime; }
     uint32_t getLastPongTime() const { return lastPongTime; }
-    
-    // Get link quality statistics
+      // Get link quality statistics
     uint16_t getPacketsSent() const { return packetsSent; }
     uint16_t getPacketsReceived() const { return packetsReceived; }
-    uint16_t getPacketsLost() const { return packetsLost; }    float getPacketLossRate() const { 
+    uint16_t getPacketsLost() const { return packetsLost; }    
+    float getPacketLossRate() const { 
         return (packetsSent > 0) ? (float)packetsLost / (float)packetsSent : 0.0f; 
     }
-    void resetStats() { packetsSent = packetsReceived = packetsLost = 0; lastStatsResetTime = millis(); }
+    
+    // Get queue status information
+    uint8_t getPendingPacketCount() const {
+        uint8_t count = 0;
+        for (int i = 0; i < QUEUE_SIZE; i++) {
+            if (queueActive[i]) count++;
+        }
+        return count;
+    }
+    
+    void resetStats() { packetsSent = packetsReceived = packetsLost = 0; totalBytesSent = totalBytesReceived = 0; lastStatsResetTime = millis(); }
     uint32_t getStatsDuration() const { return millis() - lastStatsResetTime; }
     
     // Bandwidth usage reporting
     void reportBandwidthUsage();
     unsigned long getTotalBytesSent() const;
+    unsigned long getTotalBytesReceived() const { return totalBytesReceived; }
+    float getAveragePacketSize() const {
+        return (packetsReceived > 0) ? ((float)totalBytesReceived / (float)packetsReceived) : 0.0f;
+    }
     
     // Callback for received data
     void (*onPacketReceived)(LoraPacket* packet) = nullptr;

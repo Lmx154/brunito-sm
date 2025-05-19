@@ -182,7 +182,7 @@ void loop() {
           
           // Additional debugging for packet transmission
           snprintf(debugBuffer, sizeof(debugBuffer),
-                  "<UART_DEBUG:QUEUE=%u,SENT=%lu,DROPPED=%lu,LOSS=%.2f%%>",
+                  "<UART_DEBUG:QUEUE=%u,SENT=%lu,DROPPED=%lu,LOSS=%.2f%%%%>",
                   packetManager.getQueueSize(),
                   packetManager.getPacketsSent(),
                   packetManager.getPacketsDropped(),
@@ -261,20 +261,12 @@ void reportStatus() {
              packet.magZ);
     Serial.println(debugOutput);
   }
-
-  // Report sampling statistics
-  snprintf(buffer, sizeof(buffer), "<DEBUG:SAMPLE_RATE:%.2f>", actualSampleRate);
-  Serial.println(buffer);
-
-  // Report packet statistics
-  snprintf(buffer, sizeof(buffer), "<DEBUG:PACKETS_SENT:%lu>", packetManager.getPacketsSent());
-  Serial.println(buffer);
-
-  snprintf(buffer, sizeof(buffer), "<DEBUG:PACKET_LOSS_RATE:%.2f%%>", packetManager.getPacketLossRate());
-  Serial.println(buffer);
-
-  // Report loop performance
-  snprintf(buffer, sizeof(buffer), "<DEBUG:LOOP_RATE:%lu>", loopCounter);
+  // Consolidated system statistics - combine multiple metrics in one line
+  snprintf(buffer, sizeof(buffer), "<NAVC_STATS:SAMPLE=%.2f,PACKETS=%lu,LOSS=%.2f%%,LOOP=%lu>", 
+           actualSampleRate,
+           packetManager.getPacketsSent(),
+           packetManager.getPacketLossRate(),
+           loopCounter);
   Serial.println(buffer);
 
   // Report sensor health with improved accuracy
@@ -318,10 +310,9 @@ void reportStatus() {
   snprintf(rtcBuf, sizeof(rtcBuf), "%s(20%02d-%02d-%02d)",
            rtcOK ? "OK" : "ERR",
            packet.year, packet.month, packet.day);
-
-  // Generate comprehensive sensor status report
+  // Generate comprehensive sensor status report with less verbose format
   snprintf(buffer, sizeof(buffer),
-          "<DEBUG:SENSORS:ACCEL=%s,GYRO=%s,MAG=%s,GPS=%s,BARO=%s,RTC=%s>",
+          "<SENSOR_STATUS:AC=%s,GY=%s,MG=%s,GPS=%s,BA=%s,RTC=%s>",
           accelOK ? "OK" : "ERR",
           gyroOK ? "OK" : "ERR",
           magBuf,
@@ -329,16 +320,18 @@ void reportStatus() {
           baroOK ? "OK" : "ERR",
           rtcBuf);
   Serial.println(buffer);
-  
-  // Add calibration reminder if magnetometer or GPS show issues
+    // Add calibration reminder if magnetometer or GPS show issues, but at lower frequency
   static unsigned long lastCalibrationReminder = 0;
-  if ((!magOK || !gpsOK) && (millis() - lastCalibrationReminder > 30000)) {
-    if (!magOK) {
-      Serial.println("<DEBUG:MAG_CALIBRATION_REMINDER:MOVE_DEVICE_IN_FIGURE_8_PATTERN>");
+  if ((!magOK || !gpsOK) && (millis() - lastCalibrationReminder > 60000)) { // Reduced to once per minute
+    char alertBuf[128];
+    if (!magOK && !gpsOK) {
+      snprintf(alertBuf, sizeof(alertBuf), "<ALERT:CALIBRATION_NEEDED:MAG=FIGURE_8_MOTION,GPS=CLEAR_SKY_VIEW>");
+    } else if (!magOK) {
+      snprintf(alertBuf, sizeof(alertBuf), "<ALERT:MAG_CALIBRATION_NEEDED:MOVE_IN_FIGURE_8_PATTERN>");
+    } else {
+      snprintf(alertBuf, sizeof(alertBuf), "<ALERT:GPS_SIGNAL_WEAK:ENSURE_CLEAR_SKY_VIEW>");
     }
-    if (!gpsOK) {
-      Serial.println("<DEBUG:GPS_REMINDER:ENSURE_CLEAR_VIEW_OF_SKY_AND_ALLOW_TIME_TO_ACQUIRE>");
-    }
+    Serial.println(alertBuf);
     lastCalibrationReminder = millis();
   }
 

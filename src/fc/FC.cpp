@@ -34,7 +34,9 @@ unsigned long lastCommandTime = 0; // Used for optimizing command ACK processing
 unsigned long lastUartCheck = 0;   // For UART packet processing
 unsigned long lastNavcStatsReport = 0; // For reporting NAVC packet statistics
 unsigned long lastLoraLinkReport = 0; // For reporting LoRa link quality
+// Removed lastUartLossReport variable as packet loss reporting has been removed
 static const uint32_t LORA_LINK_REPORT_PERIOD_MS = 30'000;   // 30 seconds, same as GS
+static const uint32_t UART_LOSS_REPORT_PERIOD_MS = 10'000;   // 10 seconds
 
 // Telemetry control variables
 uint8_t telemRate = 20; // Default 20 Hz
@@ -67,16 +69,18 @@ String formatTelem(const SensorPacket& packet, bool gpsOnly) {
   char buffer[250];
     if (gpsOnly) {
     // RECOVERY mode - GPS only telemetry with timestamp, satellite count, and temperature
-    snprintf(buffer, sizeof(buffer), "<TELEM:%lu,%ld,%ld,%ld,%u,%d>", 
+    snprintf(buffer, sizeof(buffer), "<T:%lu,%ld,%ld,%ld,%u,%d>", // Shortened tag for efficiency
              packet.timestamp,
              packet.latitude, 
              packet.longitude, 
              packet.altitude,
              packet.satellites,
              packet.temperature);
-  } else {    // ARMED mode - Simplified format without field names for better parsing efficiency
+  } else {
+    // ARMED mode - More compact format with shorter tag and optimized spacing
+    // Use T instead of TELEM to reduce packet size (saves 5 bytes per packet)
     snprintf(buffer, sizeof(buffer), 
-             "<TELEM:%u,%lu,%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%d>",
+             "<T:%u,%lu,%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%d>",
              packet.packetId,
              packet.timestamp,
              packet.altitude,
@@ -101,9 +105,9 @@ void startTelemetry(uint8_t hz) {
   // Set the maximum desired rate
   telemRate = hz;
   
-  // Cap rate based on bandwidth constraints
-  if (telemRate > 20) {
-    telemRate = 20; // Maximum 20 Hz
+  // Cap rate based on bandwidth constraints - increased from 20 to 30 Hz
+  if (telemRate > 30) {
+    telemRate = 30; // Maximum 30 Hz (increased from 20 Hz)
   }
   
   // Force immediate rate adjustment check
@@ -125,7 +129,7 @@ void startTelemetry(uint8_t hz) {
 
 /**
  * Adjusts telemetry rate based on LoRa link quality
- * Throttles from 20 → 4 Hz when LoRa RSSI < -110 dBm
+ * Throttles from 20 → 1 Hz depending on link conditions
  */
 void adjustTelemRate() {
   if (!loraManager.isInitialized()) {
@@ -134,9 +138,9 @@ void adjustTelemRate() {
   
   unsigned long now = millis();
   
-  // Only check and adjust rate at defined intervals
-  // This prevents excessive rate changes and allows RSSI to stabilize
-  if (now - lastRateAdjustTime < TELEM_RATE_CHECK_INTERVAL) {
+  // Check more frequently (every 2 seconds) to respond faster to changing conditions
+  static const uint32_t QUICK_RATE_CHECK_INTERVAL = 2000;
+  if (now - lastRateAdjustTime < QUICK_RATE_CHECK_INTERVAL) {
     return;
   }
   
@@ -145,16 +149,26 @@ void adjustTelemRate() {
   int16_t rssi = loraManager.getLastRssi();
   uint8_t newRate = telemRate;
   
-  // Adjust rate based on RSSI
-  if (rssi < -110) {
-    // Poor link quality - reduce rate to 4 Hz
-    newRate = 4;
-  } else if (rssi < -100) {
-    // Fair link quality - reduce rate to 10 Hz
-    newRate = 10;
+  // Check for failed transmissions to adapt rate
+  float lossRate = loraManager.getPacketLossRate();
+  uint8_t pendingCount = loraManager.getPendingPacketCount();
+  
+  // Very aggressive rate adjustment based on multiple factors
+  if (rssi < -110 || lossRate > 0.3 || pendingCount > 3) {
+    // Very poor link quality - reduce to 1 Hz
+    newRate = 1;
+  } else if (rssi < -100 || lossRate > 0.2 || pendingCount > 2) {
+    // Poor link quality - reduce to 2 Hz
+    newRate = 2;
+  } else if (rssi < -90 || lossRate > 0.1 || pendingCount > 1) {
+    // Fair link quality - reduce to 5 Hz
+    newRate = 5;  } else if (rssi < -80) {
+    // Good link quality - use 15 Hz
+    newRate = 15;
   } else {
-    // Good link quality - use full rate up to 20 Hz
-    newRate = 20;
+    // Excellent link quality - use full rate up to 25 Hz
+    // Increased from 15Hz to 25Hz for faster telemetry
+    newRate = 25;
   }
   
   // Only update if rate changed
@@ -215,7 +229,7 @@ void cmdTask() {
           
           if (snr != 0) {
             snprintf(buffer, sizeof(buffer), 
-                    "<CMD_ACK:OK:LORA_STATS,RSSI:%d,SNR:%.1f,TX:%u,RX:%u,LOST:%u,LOSS:%.1f%%>",
+                    "<CMD_ACK:OK:LORA_STATS,RSSI:%d,SNR:%.1f,TX:%u,RX:%u,LOST:%u,LOSS:%.1f%%%%>",
                     rssi, snr,
                     loraManager.getPacketsSent(),
                     loraManager.getPacketsReceived(),
@@ -223,7 +237,7 @@ void cmdTask() {
                     loraManager.getPacketLossRate() * 100.0f);
           } else {
             snprintf(buffer, sizeof(buffer), 
-                    "<CMD_ACK:OK:LORA_STATS,RSSI:%d,SNR:,TX:%u,RX:%u,LOST:%u,LOSS:%.1f%%>",
+                    "<CMD_ACK:OK:LORA_STATS,RSSI:%d,SNR:,TX:%u,RX:%u,LOST:%u,LOSS:%.1f%%%%>",
                     rssi,
                     loraManager.getPacketsSent(),
                     loraManager.getPacketsReceived(),
@@ -368,16 +382,15 @@ void reportLoraLinkStatus() {
   } else {
     strcpy(lossRateStr, "0.0");
   }
-  
   // Check if SNR value is valid (RFM95 returns 0 SNR when no packets received)
   if (received > 0 && snr != 0) {
     snprintf(buffer, sizeof(buffer), 
-            "<FC_LINK:%s,RSSI:%d,SNR:%.1f,PKT_SENT:%u,PKT_RECV:%u,LOSS:%s%%,LAST_RX:%s>", 
+            "<FC_LINK:%s,RSSI:%d,SNR:%.1f,PKT_SENT:%u,PKT_RECV:%u,LOSS:%s%%%%,LAST_RX:%s>", 
             linkQuality.c_str(), rssi, snr, sent, received, lossRateStr, timeStr);
   } else {
     // No valid SNR, omit it from output
     snprintf(buffer, sizeof(buffer), 
-            "<FC_LINK:%s,RSSI:%d,PKT_SENT:%u,PKT_RECV:%u,LOSS:%s%%,LAST_RX:%s>", 
+            "<FC_LINK:%s,RSSI:%d,PKT_SENT:%u,PKT_RECV:%u,LOSS:%s%%%%,LAST_RX:%s>", 
             linkQuality.c_str(), rssi, sent, received, lossRateStr, timeStr);
   }
   Serial.println(buffer);
@@ -388,6 +401,8 @@ void reportLoraLinkStatus() {
     Serial.println("<DEBUG:LORA_STATS_AUTO_RESET>");
   }
 }
+
+// Removed UART packet loss reporting function as it's causing more problems than it solves
 
 // Function to handle received LoRa packets
 void handleLoraPacket(LoraPacket* packet) {
@@ -459,12 +474,13 @@ void uartTask() {
     // Check if there's any UART data at all
     int bytesAvailable = Serial2.available();
     unsigned long timeSinceLastPacket = uartManager.getTimeSinceLastPacket();
-    
-    // Only report issues or periodic stats
-    if (uartManager.getCrcErrors() > 0 || bytesAvailable == 0 || currentTime % 60000 < 1000) { // Every minute or on errors
+      // Only report issues or very infrequent periodic stats
+    if ((uartManager.getCrcErrors() > 0 && currentTime % 30000 < 1000) || // Report errors every 30s max
+        (bytesAvailable == 0 && timeSinceLastPacket > 5000) ||           // Report when no data and last packet was long ago
+        (currentTime % 300000 < 1000)) {                                // Periodic report every 5 minutes
       char buffer[128];
       snprintf(buffer, sizeof(buffer), 
-              "<DEBUG:UART_STATUS:RECV:%lu,DROPS:%lu,ERRS:%lu>",
+              "<UART_MONITOR:RX=%lu,DROP=%lu,ERR=%lu>",
               uartManager.getPacketsReceived(),
               uartManager.getPacketsDropped(),
               uartManager.getCrcErrors());
@@ -472,11 +488,16 @@ void uartTask() {
     }
       // If no data is coming in, try sending a ping to NAVC
     if (bytesAvailable == 0) {      if (uartManager.getPacketsReceived() == 0 || timeSinceLastPacket > 10000) {
-        // Check RX pin state for hardware troubleshooting
-        int rxPinState = digitalRead(PA2);
-        Serial.print("<DEBUG:ATTEMPTING_NAVC_PING:RX_PIN=");
-        Serial.print(rxPinState);
-        Serial.println(">");
+        // Only log ping attempts every 5s to reduce verbosity
+        static unsigned long lastPingLogTime = 0;
+        if (currentTime - lastPingLogTime > 5000) {
+          // Check RX pin state for hardware troubleshooting
+          int rxPinState = digitalRead(PA2);
+          char pingBuf[40];
+          snprintf(pingBuf, sizeof(pingBuf), "<NAVC_PING:RX_PIN=%d>", rxPinState);
+          Serial.println(pingBuf);
+          lastPingLogTime = currentTime;
+        }
         
         // Safely send a ping without blocking
         uartManager.sendCommand("<PING>");
@@ -499,20 +520,31 @@ void uartTask() {
         }
       } else {
         uartFailCount = 0; // Reset counter if we've received packets but just not at this moment
-      }} else {
-      // Data is available, try to examine the first few bytes without ACTUALLY consuming them      Serial.print("<DEBUG:UART_RAW_DATA:");
-      
+      }} else {      // Data is available, but don't log raw data unless we're in an error state
       // Read bytes into temporary buffer, then add them back
       uint8_t tempBuffer[16]; // Make it bigger just in case
       int bytesToExamine = min(bytesAvailable, 8);
       
-      // Read bytes into temporary buffer
+      // Read bytes into temporary buffer silently
       for (int i = 0; i < bytesToExamine; i++) {
         tempBuffer[i] = Serial2.read();
-        Serial.print(tempBuffer[i], HEX);
-        Serial.print(" ");
       }
-      Serial.println(">");
+      
+      // Only print raw data if we're experiencing persistent errors
+      static unsigned long lastRawDataTime = 0;
+      if (uartFailCount > 2 && currentTime - lastRawDataTime > 15000) {
+        char hexBuf[50] = "<RAW_UART:";
+        int hexPos = 10; // Start after "<RAW_UART:"
+        
+        for (int i = 0; i < bytesToExamine && hexPos < 40; i++) {
+          hexPos += snprintf(hexBuf + hexPos, sizeof(hexBuf) - hexPos, "%02X ", tempBuffer[i]);
+        }
+        
+        hexBuf[hexPos] = '>';
+        hexBuf[hexPos+1] = '\0';
+        Serial.println(hexBuf);
+        lastRawDataTime = currentTime;
+      }
       
       // Put the data back by writing it to a different port and copying back
       for (int i = bytesToExamine - 1; i >= 0; i--) {
@@ -531,33 +563,71 @@ void uartTask() {
     
     // Process sensor data based on current state
     switch (stateManager.getCurrentState()) {
-      case STATE_ARMED:
-        // In ARMED state, format full telemetry and send over LoRa
-        if (loraManager.isInitialized()) {          // Check if it's time to send telemetry based on the current rate
+      case STATE_ARMED:        // In ARMED state, format full telemetry and send over LoRa
+        if (loraManager.isInitialized()) {
+          // Check if it's time to send telemetry based on the current rate
           unsigned long now = millis();
           if (now - lastTelemTime >= telemPeriodMs) {
             lastTelemTime = now;
-              // Format telemetry using our new function
-            String telemStr = formatTelem(packet, false);
             
-            // Send telemetry to debug port and LoRa
-            Serial.println(telemStr);
+            // Before sending new telemetry, implement improved flow control
+            // Only queue up to a small number of packets to avoid flooding
+            // More aggressively drop packets when queue is getting full
+            uint8_t pendingCount = loraManager.getPendingPacketCount();
             
-            // Add debug information about current telemetry rate
-            static uint8_t lastReportedRate = 0;
-            if (telemRate != lastReportedRate || (now % 30000) < 50) { // Report on change or every ~30 seconds
-                char rateBuffer[64];
-                snprintf(rateBuffer, sizeof(rateBuffer), 
-                         "<DEBUG:TELEM_STATUS:RATE=%u_Hz,PERIOD=%lu_ms,RSSI=%d>", 
-                         telemRate, telemPeriodMs, loraManager.getLastRssi());
-                Serial.println(rateBuffer);
-                lastReportedRate = telemRate;
+            // Implement a smoother adaptive strategy based on pending packets
+            static uint8_t skipCounter = 0;
+            bool shouldSkip = false;
+            
+            if (pendingCount == 0) {
+              // No pending packets, always send
+              skipCounter = 0;
+              shouldSkip = false;
+            } else if (pendingCount == 1) {
+              // Skip every other packet
+              shouldSkip = (++skipCounter % 2 == 0);
+            } else if (pendingCount == 2) {
+              // Skip 2 out of 3 packets
+              shouldSkip = (++skipCounter % 3 != 0);
             } else {
-                Serial.println("<DEBUG:SENDING_TELEM_PACKET>");
+              // Skip this one to avoid overloading
+              shouldSkip = true;
+              static unsigned long lastSkipReportTime = 0;
+              if (now - lastSkipReportTime > 5000) { // Report skips at most every 5 seconds
+                Serial.println("<DEBUG:TELEM_SKIPPED:LORA_OVERLOADED>");
+                lastSkipReportTime = now;
+              }
             }
             
-            // Send the packet over LoRa
-            loraManager.sendPacket(LORA_TYPE_TELEM, telemStr.c_str(), telemStr.length());
+            // Only send if we shouldn't skip
+            if (!shouldSkip) {
+              // Format telemetry using our new function
+              String telemStr = formatTelem(packet, false);
+              
+              // Send telemetry to debug port and LoRa - don't always echo to debug port
+              static uint8_t debugEchoCounter = 0;
+              if (++debugEchoCounter >= 5) { // Only echo every 5th packet to reduce debug output
+                Serial.println(telemStr);
+                debugEchoCounter = 0;
+              }
+                
+              // Add minimal telemetry info at a much lower frequency to reduce debug output
+              static uint8_t lastReportedRate = 0;
+              static unsigned long lastTelemStatusReport = 0;
+              if ((telemRate != lastReportedRate && now - lastTelemStatusReport > 5000) || (now - lastTelemStatusReport > 60000)) { 
+                  // Report only when rate changes (and at least 5s since last report) or every minute
+                  char rateBuffer[64];
+                  snprintf(rateBuffer, sizeof(rateBuffer), 
+                           "<TELEM_INFO:RATE=%u_Hz,RSSI=%d>", 
+                           telemRate, loraManager.getLastRssi());
+                  Serial.println(rateBuffer);
+                  lastReportedRate = telemRate;
+                  lastTelemStatusReport = now;
+              }
+              
+              // Send the packet over LoRa
+              loraManager.sendPacket(LORA_TYPE_TELEM, telemStr.c_str(), telemStr.length());
+            }
             
             // Check if we need to adjust telemetry rate based on link quality
             adjustTelemRate();
@@ -615,21 +685,15 @@ void uartTask() {
     static unsigned long lastCrcErrorTime = 0;
     static uint16_t batchErrorCount = 0;
     
-    batchErrorCount++;
-    
-    // Only log every 5 seconds or after 100 errors
-    if (currentTime - lastCrcErrorTime > 5000 || batchErrorCount >= 100) {
-      char errorBuffer[64];
-      snprintf(errorBuffer, sizeof(errorBuffer), "<DEBUG:CRC_ERRORS:%u>", batchErrorCount);
-      Serial.println(errorBuffer);
-      
+    batchErrorCount++;    // Removed CRC error reporting as it's causing more problems than it solves
+    // Resetting error count without logging
+    if (currentTime - lastCrcErrorTime > 10000 || batchErrorCount >= 100) {
       lastCrcErrorTime = currentTime;
       batchErrorCount = 0;
     }
   }
-  
-  // Periodically report UART packet statistics
-  if (currentTime - lastNavcStatsReport >= 5000) { // Every 5 seconds
+    // Periodically report UART packet statistics (at a reduced frequency)
+  if (currentTime - lastNavcStatsReport >= 10000) { // Every 10 seconds (reduced from 5s)
     lastNavcStatsReport = currentTime;
     
     // Format and send statistics
@@ -660,7 +724,7 @@ void uartTask() {
     }
     
     snprintf(statsBuffer, sizeof(statsBuffer),
-             "<NAVC_LINK:%s,HEALTH:%.1f%%,RECV:%lu,DROPS:%lu,ERRS:%lu,RATE:%.2f,LAST:%lums>",
+             "<NAVC_LINK:%s,HEALTH:%.1f%%%%,RECV:%lu,DROPS:%lu,ERRS:%lu,RATE:%.2f,LAST:%lums>",
              linkStatus.c_str(),
              healthPct,
              uartManager.getPacketsReceived(),
@@ -757,16 +821,19 @@ void loop() {
   
   // Process UART communication with NAVC (high priority, check every loop iteration)
   uartTask();
-  
-  // Process LoRa communication
+    // Process LoRa communication
   unsigned long now = millis();
-  if (now - lastLoraCheck >= 10) { // Check LoRa every 10ms
+  if (now - lastLoraCheck >= 5) { // Check LoRa every 5ms (reduced from 10ms) for faster telemetry
     lastLoraCheck = now;
     
     // Check for received packets
     loraManager.checkReceived();
     
     // Process queue (send pending packets, retry failed ones)
+    loraManager.checkQueue();
+    
+    // Process queue again to handle more telemetry packets per loop iteration
+    // This second call will prioritize sending telemetry packets
     loraManager.checkQueue();
     
     // Periodically report bandwidth usage to monitor telemetry efficiency
@@ -791,6 +858,8 @@ void loop() {
       lastLoraLinkReport = now;
       reportLoraLinkStatus();
     }
+      // Removed packet loss reporting as it's causing more problems than it solves
+    // No need to track and report UART packet loss statistics
   }
     // Update heartbeat pattern if state changed
   updateHeartbeatPattern();
