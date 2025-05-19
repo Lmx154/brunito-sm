@@ -29,8 +29,8 @@ unsigned long lastLoraCheck = 0;
 unsigned long lastBandwidthCheck = 0;
 const unsigned long BANDWIDTH_CHECK_INTERVAL = 60000; // Check bandwidth every 60 seconds
 
-// CSV output control
-bool outputCsvFormat = true;
+// CSV output control (disabled by default now)
+bool outputCsvFormat = false;
 bool csvHeaderPrinted = false;
 
 /**
@@ -151,11 +151,12 @@ void handleLoraPacket(LoraPacket* packet) {
       snprintf(buffer, sizeof(buffer), "<RSSI:%d,SNR:>", rssi);
     }
     Serial.println(buffer);  }  else if (packet->type == LORA_TYPE_TELEM) {
-    // Telemetry from FC - process and output as CSV
+    // Telemetry from FC - just display raw telemetry
     char msgBuffer[LORA_MAX_PACKET_SIZE + 1]; // +1 for null terminator
     memcpy(msgBuffer, packet->data, packet->len);
     msgBuffer[packet->len] = '\0'; // Ensure null termination
-      // Debug telemetry reception with RSSI information
+      
+    // Debug telemetry reception with RSSI information
     char debugBuffer[96];
     int16_t rssi = loraManager.getLastRssi();
     float snr = loraManager.getLastSnr();
@@ -173,15 +174,8 @@ void handleLoraPacket(LoraPacket* packet) {
              rssi, snr, packet->len, rateIndicator);
     Serial.println(debugBuffer);
     
-    // Always show the raw frame for debug purposes
-    Serial.print("<RAW_TELEM:");
-    Serial.print(msgBuffer);
-    Serial.println(">");
-    
-    // Parse telemetry data and output as CSV if enabled
-    if (outputCsvFormat) {
-      parseTelemToCsv(msgBuffer);
-    }
+    // Display the raw telemetry directly without additional tags
+    Serial.println(msgBuffer);
   }
   else if (packet->type == LORA_TYPE_STATUS) {
     // Status messages from FC - forward to Serial
@@ -285,9 +279,8 @@ void printHelp() {
   Serial.println("  <CMD:NAVC_RESET_STATS>   - Reset NAVC packet statistics");
   Serial.println("  <CMD:LORA_RESET_STATS>   - Reset LoRa statistics counters");
   Serial.println("  <CMD:LORA_STATS>         - Show detailed LoRa statistics");
-  Serial.println("Local commands:");
-  Serial.println("  CSV_ON                   - Enable CSV output format for telemetry");
-  Serial.println("  CSV_OFF                  - Display raw telemetry frames");
+  Serial.println("Local commands:");  Serial.println("  CSV_ON                   - Enable CSV output format for telemetry");
+  Serial.println("  CSV_OFF                  - Display raw telemetry frames (default)");
   Serial.println("  HELP                     - Show this help message");
   Serial.println("Type command and press Enter to send");
   Serial.println("Commands are automatically framed if needed\n");
