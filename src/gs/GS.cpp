@@ -58,34 +58,32 @@ void parseTelemToCsv(const char* frame) {
   int commaCount = 0;
   for (size_t j = 0; j < p; j++) {
     if (payload[j] == ',') commaCount++;
-  }
-  // Print CSV header if needed
+  }  // Print CSV header if needed
   if (!csvHeaderPrinted) {
-    if (commaCount == 14) {  // ARMED format (15 values - now includes sats)
+    if (commaCount == 15) {  // ARMED format (16 values - now includes sats and temperature)
       Serial.println("pkID,timestamp_ms,alt_m,accel_x_g,accel_y_g,accel_z_g,"
                     "gyro_x_dps,gyro_y_dps,gyro_z_dps,"
-                    "mag_x_uT,mag_y_uT,mag_z_uT,lat_deg,lon_deg,sats");
-    } else if (commaCount == 4) {  // RECOVERY format (5 values - now includes sats)
-      Serial.println("timestamp_ms,lat_deg,lon_deg,alt_m,sats");
+                    "mag_x_uT,mag_y_uT,mag_z_uT,lat_deg,lon_deg,sats,temp_c");
+    } else if (commaCount == 5) {  // RECOVERY format (6 values - now includes sats and temperature)
+      Serial.println("timestamp_ms,lat_deg,lon_deg,alt_m,sats,temp_c");
     }
     csvHeaderPrinted = true;
   }
-  
-  // Parse values and apply scaling based on format
-  if (commaCount == 14) {  // ARMED format
-    // Parse all 15 values
-    long values[15];
+    // Parse values and apply scaling based on format
+  if (commaCount == 15) {  // ARMED format
+    // Parse all 16 values
+    long values[16];
     int valueIndex = 0;
     char* token = strtok(payload, ",");
     
-    while (token != NULL && valueIndex < 15) {
+    while (token != NULL && valueIndex < 16) {
       values[valueIndex++] = atol(token);
       token = strtok(NULL, ",");
     }
     
     // Apply scaling and print CSV line
-    if (valueIndex == 15) {
-      // Values: pkID, timestamp, alt, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, mag_x, mag_y, mag_z, lat, lon, sats
+    if (valueIndex == 16) {
+      // Values: pkID, timestamp, alt, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, mag_x, mag_y, mag_z, lat, lon, sats, temp
       Serial.print(values[0]); Serial.print(",");                   // pkID (raw)
       Serial.print(values[1]); Serial.print(",");                   // timestamp_ms (raw)
       Serial.print(values[2] / 100.0f, 2); Serial.print(",");       // alt_m (cm → m)
@@ -100,29 +98,32 @@ void parseTelemToCsv(const char* frame) {
       Serial.print(values[11] / 10.0f, 1); Serial.print(",");       // mag_z_uT (0.1 μT → μT)
       Serial.print(values[12] / 10000000.0f, 7); Serial.print(","); // lat_deg (1e7 → degrees)
       Serial.print(values[13] / 10000000.0f, 7); Serial.print(","); // lon_deg (1e7 → degrees)
-      Serial.print(values[14]);                                     // sats (raw)
+      Serial.print(values[14]); Serial.print(",");                  // sats (raw)
+      Serial.print(values[15] / 100.0f, 2);                         // temp_c (centi-degrees → degrees)
       Serial.println();
     }
-  } 
-  else if (commaCount == 4) {  // RECOVERY format
-    // Parse all 5 values
-    long values[5];
+  }
+  
+  else if (commaCount == 5) {  // RECOVERY format
+    // Parse all 6 values
+    long values[6];
     int valueIndex = 0;
     char* token = strtok(payload, ",");
     
-    while (token != NULL && valueIndex < 5) {
+    while (token != NULL && valueIndex < 6) {
       values[valueIndex++] = atol(token);
       token = strtok(NULL, ",");
     }
     
     // Apply scaling and print CSV line
-    if (valueIndex == 5) {
-      // Values: timestamp, lat, lon, alt, sats
+    if (valueIndex == 6) {
+      // Values: timestamp, lat, lon, alt, sats, temp
       Serial.print(values[0]); Serial.print(",");                  // timestamp_ms (raw)
       Serial.print(values[1] / 10000000.0f, 7); Serial.print(","); // lat_deg (1e7 → degrees)
       Serial.print(values[2] / 10000000.0f, 7); Serial.print(","); // lon_deg (1e7 → degrees)
       Serial.print(values[3] / 100.0f, 2); Serial.print(",");      // alt_m (cm → m)
-      Serial.print(values[4]);                                     // sats (raw)
+      Serial.print(values[4]); Serial.print(",");                  // sats (raw)
+      Serial.print(values[5] / 100.0f, 2);                         // temp_c (centi-degrees → degrees)
       Serial.println();
     }
   }

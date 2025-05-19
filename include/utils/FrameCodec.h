@@ -61,23 +61,22 @@ public:
             }
         }
     }
-    
-    // Format a telemetry message in ARMED state
+      // Format a telemetry message in ARMED state
     static void formatArmedTelemetry(char* buffer, size_t bufferSize, 
                                    uint16_t pkId, uint32_t timestamp,
                                    int32_t alt, int16_t accelX, int16_t accelY, int16_t accelZ,
                                    int16_t gyroX, int16_t gyroY, int16_t gyroZ,
                                    int16_t magX, int16_t magY, int16_t magZ,
-                                   int32_t lat, int32_t lon) {
-        snprintf(buffer, bufferSize, "<TELEM:%u,%lu,%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld>",
+                                   int32_t lat, int32_t lon, uint8_t sats, int16_t temp) {
+        snprintf(buffer, bufferSize, "<TELEM:%u,%lu,%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%d>",
                 pkId, timestamp, alt, accelX, accelY, accelZ, gyroX, gyroY, gyroZ,
-                magX, magY, magZ, lat, lon);
+                magX, magY, magZ, lat, lon, sats, temp);
     }
-    
-    // Format a telemetry message in RECOVERY state (GPS only)
+      // Format a telemetry message in RECOVERY state (GPS only)
     static void formatRecoveryTelemetry(char* buffer, size_t bufferSize,
-                                     uint32_t timestamp, int32_t lat, int32_t lon, int32_t alt) {
-        snprintf(buffer, bufferSize, "<TELEM:%lu,%ld,%ld,%ld>", timestamp, lat, lon, alt);
+                                     uint32_t timestamp, int32_t lat, int32_t lon, int32_t alt, 
+                                     uint8_t sats, int16_t temp) {
+        snprintf(buffer, bufferSize, "<TELEM:%lu,%ld,%ld,%ld,%u,%d>", timestamp, lat, lon, alt, sats, temp);
     }
       // Calculate CRC16 for binary packet
     static uint16_t calculatePacketCRC(const uint8_t* packet, size_t length) {

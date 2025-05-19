@@ -41,6 +41,7 @@ typedef struct {
     uint8_t minute;      // Minute (0-59)
     uint8_t second;      // Second (0-59)
     uint8_t satellites;  // Number of GPS satellites
+    int16_t temperature; // Temperature in °C * 100
     uint16_t crc16;      // CRC-16 checksum
 } __attribute__((packed)) SensorPacket;
 

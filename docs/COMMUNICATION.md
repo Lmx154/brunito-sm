@@ -102,11 +102,18 @@ ASCII framing: `<TYPE:PAYLOAD>`
   | 18–19 | gyro_y      | int16_t  | dps * 100      | Gyroscope Y               |
   | 20–21 | gyro_z      | int16_t  | dps * 100      | Gyroscope Z               |
   | 22–23 | mag_x       | int16_t  | µT * 10        | Magnetometer X            |
-  | 24–25 | mag_y       | int16_t  | µT * 10        | Magnetometer Y            |
-  | 26–27 | mag_z       | int16_t  | µT * 10        | Magnetometer Z            |
+  | 24–25 | mag_y       | int16_t  | µT * 10        | Magnetometer Y            |  | 26–27 | mag_z       | int16_t  | µT * 10        | Magnetometer Z            |
   | 28–31 | lat         | int32_t  | degrees * 1e7  | Latitude                  |
   | 32–35 | lon         | int32_t  | degrees * 1e7  | Longitude                 |
-  | 36–37 | crc16       | uint16_t | CCITT-F        | Checksum                  |
+  | 36    | year        | uint8_t  | Last 2 digits  | Year                      |
+  | 37    | month       | uint8_t  | 1-12           | Month                     |
+  | 38    | day         | uint8_t  | 1-31           | Day                       |
+  | 39    | hour        | uint8_t  | 0-23           | Hour                      |
+  | 40    | minute      | uint8_t  | 0-59           | Minute                    |
+  | 41    | second      | uint8_t  | 0-59           | Second                    |
+  | 42    | satellites  | uint8_t  | None           | Satellite count           |
+  | 43–44 | temp        | int16_t  | °C * 100       | Temperature               |
+  | 45–46 | crc16       | uint16_t | CCITT-F        | Checksum                  |
 
 ### 5.3 LoRa (FC-GS)
 - **Config**: 915 MHz, SF7, BW 250 kHz, CR 4/5, Sync Word 0xAB, FC Addr 0xA2, GS Addr 0xA1.
@@ -163,7 +170,7 @@ Commands are prioritized:
 Live telemetry enables real-time flight monitoring, active in ARMED (full sensors) and RECOVERY (GPS-only) states. It uses minimal ASCII frames for backend parsing.
 
 #### Formats
-- **ARMED**: `<TELEM:pkID,timestamp,alt,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z,mag_x,mag_y,mag_z,lat,lon,sats>`
+- **ARMED**: `<TELEM:pkID,timestamp,alt,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z,mag_x,mag_y,mag_z,lat,lon,sats,temp>`
   | Field     | Type     | Scaling        | Description               |
   |-----------|----------|----------------|---------------------------|
   | pkID      | uint16_t | None           | Packet ID                 |
@@ -181,7 +188,8 @@ Live telemetry enables real-time flight monitoring, active in ARMED (full sensor
   | lat       | int32_t  | degrees * 1e7  | Latitude                  |
   | lon       | int32_t  | degrees * 1e7  | Longitude                 |
   | sats      | uint8_t  | None           | GPS satellite count       |
-- **RECOVERY**: `<TELEM:timestamp,lat,lon,alt,sats>`
+  | temp      | int16_t  | °C * 100       | Temperature               |
+- **RECOVERY**: `<TELEM:timestamp,lat,lon,alt,sats,temp>`
   | Field     | Type     | Scaling        | Description               |
   |-----------|----------|----------------|---------------------------|
   | timestamp | uint32_t | milliseconds   | Time since start          |
@@ -189,6 +197,7 @@ Live telemetry enables real-time flight monitoring, active in ARMED (full sensor
   | lon       | int32_t  | degrees * 1e7  | Longitude                 |
   | alt       | int32_t  | meters * 100   | Altitude                  |
   | sats      | uint8_t  | None           | GPS satellite count       |
+  | temp      | int16_t  | °C * 100       | Temperature               |
 
 #### Encoding
 - **NAVC**: Sends 50 Hz binary packets (38 bytes) to FC.
@@ -199,17 +208,17 @@ Live telemetry enables real-time flight monitoring, active in ARMED (full sensor
       uint16_t pkID = *(uint16_t*)&packet[0];
       uint32_t timestamp = *(uint32_t*)&packet[2];
       int32_t alt = *(int32_t*)&packet[6];
-      if (gpsOnly) {
-          int32_t lat = *(int32_t*)&packet[28];
+      if (gpsOnly) {          int32_t lat = *(int32_t*)&packet[28];
           int32_t lon = *(int32_t*)&packet[32];
+          uint8_t sats = packet[36];
+          int16_t temp = *(int16_t*)&packet[37]; // New temperature field
           char buf[100];
-          snprintf(buf, sizeof(buf), "<TELEM:%lu,%ld,%ld,%ld>", timestamp, lat, lon, alt);
+          snprintf(buf, sizeof(buf), "<TELEM:%lu,%ld,%ld,%ld,%u,%d>", timestamp, lat, lon, alt, sats, temp);
           return String(buf);
-      }
-      // Extract other fields
+      }      // Extract other fields
       char buf[200];
-      snprintf(buf, sizeof(buf), "<TELEM:%u,%lu,%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld>",
-               pkID, timestamp, alt, /* ... */, lat, lon);
+      snprintf(buf, sizeof(buf), "<TELEM:%u,%lu,%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%d>",
+               pkID, timestamp, alt, /* ... */, lat, lon, sats, temp);
       return String(buf);
   }
   ```

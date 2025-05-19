@@ -65,19 +65,18 @@ unsigned long lastBandwidthReport = 0; // For bandwidth usage reporting
  */
 String formatTelem(const SensorPacket& packet, bool gpsOnly) {
   char buffer[250];
-  
-  if (gpsOnly) {
-    // RECOVERY mode - GPS only telemetry with timestamp and satellite count
-    snprintf(buffer, sizeof(buffer), "<TELEM:%lu,%ld,%ld,%ld,%u>", 
+    if (gpsOnly) {
+    // RECOVERY mode - GPS only telemetry with timestamp, satellite count, and temperature
+    snprintf(buffer, sizeof(buffer), "<TELEM:%lu,%ld,%ld,%ld,%u,%d>", 
              packet.timestamp,
              packet.latitude, 
              packet.longitude, 
              packet.altitude,
-             packet.satellites);
-  } else {
-    // ARMED mode - Simplified format without field names for better parsing efficiency
+             packet.satellites,
+             packet.temperature);
+  } else {    // ARMED mode - Simplified format without field names for better parsing efficiency
     snprintf(buffer, sizeof(buffer), 
-             "<TELEM:%u,%lu,%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u>",
+             "<TELEM:%u,%lu,%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%d>",
              packet.packetId,
              packet.timestamp,
              packet.altitude,
@@ -85,7 +84,8 @@ String formatTelem(const SensorPacket& packet, bool gpsOnly) {
              packet.gyroX, packet.gyroY, packet.gyroZ,
              packet.magX, packet.magY, packet.magZ,
              packet.latitude, packet.longitude,
-             packet.satellites);
+             packet.satellites,
+             packet.temperature);
   }
   
   return String(buffer);

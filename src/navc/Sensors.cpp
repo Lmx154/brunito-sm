@@ -1271,6 +1271,9 @@ void SensorManager::processSensorData() {
     
     // Scale and convert all values to integers with appropriate scaling
     
+    // Temperature in centi-degrees (C * 100)
+    currentPacket.temperature = static_cast<int16_t>(temperature * 100.0f);
+    
     // Altitude in cm (meters * 100)
     currentPacket.altitude = static_cast<int32_t>(altitude * 100.0f);
     
