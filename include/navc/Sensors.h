@@ -110,12 +110,14 @@ public:
     const SensorPacket& getPacket() const;
       // Check if a new packet is ready to stream
     bool isPacketReady();
-    
-    // Get the number of satellites currently tracked by GPS
+      // Get the number of satellites currently tracked by GPS
     uint8_t getGpsSatelliteCount() const;
     
     // Set the RGB status LED color
     void setStatusLED(uint8_t r, uint8_t g, uint8_t b);
+    
+    // Utility function to test GPS connection and diagnose wiring issues
+    bool testGpsConnection();
 };
 
 #endif // SENSORS_H

@@ -1,6 +1,10 @@
 #include "../include/navc/Sensors.h"
 #include "../include/utils/FrameCodec.h"
 
+// Define dedicated hardware Serial for GPS with fixed pins
+// The pins must be specified in the constructor, not later with setRx/setTx
+HardwareSerial SerialGPS(PB7, PB6);  // RX, TX pins for UBLOX MAX-M10S GPS
+
 // Global variables to cache valid magnetometer readings
 // These are shared between readMagnetometer() and processSensorData()
 bool SensorManager_hasValidReadingEver = false;
@@ -53,51 +57,49 @@ bool SensorManager::begin() {
     Wire.setSCL(PB8); // Set SCL pin to PB8
     Wire.setSDA(PB9); // Set SDA pin to PB9
     Wire.begin();
-    Wire.setClock(100000); // 100 kHz for better stability with BMM150 (changed from 400kHz)
-      // Initialize Serial1 for GPS with proper configuration
-    Serial1.begin(9600); // UBLOX MAX-M10S default rate is 9600
-    Serial1.setRx(PB7);  // UBLOX MAX M10S GPS RX pin
-    Serial1.setTx(PB6);  // UBLOX MAX M10S GPS TX pin
+    Wire.setClock(100000); // 100 kHz for better stability with BMM150 (changed from 400kHz)    // Initialize SerialGPS for GPS communication
+    // The pins are already configured in the SerialGPS constructor (PB7=RX, PB6=TX)
+    // No need to manually set pin modes or use setRx/setTx since they're in the constructor
+    
+    // Initialize SerialGPS at default baud rate
+    SerialGPS.begin(9600);       // UBLOX MAX-M10S default rate is 9600
     
     // Clear any existing data in the GPS buffer
-    while (Serial1.available()) {
-        Serial1.read();
+    while (SerialGPS.available()) {
+        SerialGPS.read();
     }
     
-    delay(200); // Longer delay for GPS UART to stabilize
+    delay(300);  // Longer delay for GPS UART to stabilize (increased from 200ms)
     
-    // Set GPS to navigation mode with improved satellite acquisition
-    // UBX-CFG-PMS - Set power mode to full tracking power for faster acquisition
+    // Set GPS to navigation mode with improved satellite acquisition    // UBX-CFG-PMS - Set power mode to full tracking power for faster acquisition
     uint8_t powerMode[] = {0xB5, 0x62, 0x06, 0x86, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x95, 0x61};
-    Serial1.write(powerMode, sizeof(powerMode));
+    SerialGPS.write(powerMode, sizeof(powerMode));
     delay(100);
     
     // UBX-CFG-GNSS - Enable GPS+GLONASS for better satellite acquisition
     uint8_t enableSystems[] = {0xB5, 0x62, 0x06, 0x3E, 0x3C, 0x00, 0x00, 0x00, 0x20, 0x07, 0x00, 0x08, 0x10, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 0x04, 0x08, 0x00, 0x00, 0x00, 0x01, 0x01, 0x03, 0x08, 0x10, 0x00, 0x00, 0x00, 0x01, 0x01, 0x04, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x01, 0x05, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x01, 0x06, 0x08, 0x0E, 0x00, 0x00, 0x00, 0x01, 0x01, 0x2C, 0x4B};
-    Serial1.write(enableSystems, sizeof(enableSystems));
+    SerialGPS.write(enableSystems, sizeof(enableSystems));
     delay(100);
     
     // UBX-CFG-NAV5 - Set to airborne<1g dynamic model for better height accuracy
     uint8_t dynamicModel[] = {0xB5, 0x62, 0x06, 0x24, 0x24, 0x00, 0xFF, 0xFF, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x10, 0x27, 0x00, 0x00, 0x05, 0x00, 0xFA, 0x00, 0xFA, 0x00, 0x64, 0x00, 0x2C, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16, 0xDC};
-    Serial1.write(dynamicModel, sizeof(dynamicModel));
+    SerialGPS.write(dynamicModel, sizeof(dynamicModel));
     delay(100);
     
     // UBX-CFG-RATE - Set update rate to 5Hz for better position tracking
     uint8_t updateRate[] = {0xB5, 0x62, 0x06, 0x08, 0x06, 0x00, 0xC8, 0x00, 0x01, 0x00, 0x01, 0x00, 0xDE, 0x6A};
-    Serial1.write(updateRate, sizeof(updateRate));
+    SerialGPS.write(updateRate, sizeof(updateRate));
     delay(100);
-    
-    // Ensure the Serial1 configuration is stable and prime TinyGPSPlus
+      // Ensure the SerialGPS configuration is stable and prime TinyGPSPlus
     for (int i = 0; i < 10; i++) {
         unsigned long startTime = millis();
         while (millis() - startTime < 100) { // Process for 100ms
-            if (Serial1.available()) {
-                gps.encode(Serial1.read());
+            if (SerialGPS.available()) {
+                gps.encode(SerialGPS.read());
             }
         }
     }
-    
-    #if DEBUG_SENSORS
+      #if DEBUG_SENSORS
     Serial.println("\n<DEBUG:GPS_DIAGNOSTIC_START>");
     Serial.print("<DEBUG:GPS_CHARS_PROCESSED:");
     Serial.print(gps.charsProcessed());
@@ -106,13 +108,27 @@ bool SensorManager::begin() {
     Serial.print(gps.sentencesWithFix());
     Serial.println(">");
     
+    // Check if we're getting any data; if not, run the connection test
+    if (gps.charsProcessed() == 0) {
+        Serial.println("<DEBUG:GPS_NO_DATA_TESTING_CONNECTION>");
+        bool connectionOk = testGpsConnection();
+        
+        if (connectionOk) {
+            Serial.println("<DEBUG:GPS_CONNECTION_TEST_PASSED_BUT_NO_DATA_YET>");
+        } else {
+            Serial.println("<DEBUG:GPS_CONNECTION_TEST_FAILED:CHECK_WIRING>");
+        }
+    }
+    #endif
+    
+    #if DEBUG_SENSORS
     // Echo raw GPS data to help diagnose connection issues
     Serial.println("<DEBUG:RAW_GPS_DATA_SAMPLE_BEGIN>");
     unsigned long rawStartTime = millis();
     int charsRead = 0;
     while (millis() - rawStartTime < 2000) { // Sample for 2 seconds
-        if (Serial1.available()) {
-            char c = Serial1.read();
+        if (SerialGPS.available()) {
+            char c = SerialGPS.read();
             Serial.write(c);
             charsRead++;
         }
@@ -297,28 +313,118 @@ int SensorManager::beginWithDiagnostics() {
     if (!anyDeviceFound) {
         Serial.println("<DEBUG:I2C_NO_DEVICES_FOUND>");
         return 1; // Error: No I2C devices found
+    }    // Initialize SerialGPS with more robust diagnostics
+    Serial.println("<DEBUG:GPS_UART_INIT_BEGINNING>");
+    
+    // Print pin states before UART initialization
+    Serial.print("<DEBUG:GPS_PIN_STATES:RX(PB7)=");
+    Serial.print(digitalRead(PB7));
+    Serial.print(",TX(PB6)=");
+    Serial.print(digitalRead(PB6));
+    Serial.println(">");
+    
+    // Initialize SerialGPS - pins are already configured in the constructor
+    SerialGPS.begin(9600);
+    delay(100); // Wait for UART to initialize    Serial.println("<DEBUG:GPS_UART_INIT:9600>");
+    
+    // Clear any existing data in buffer
+    int clearCount = 0;
+    while (SerialGPS.available()) {
+        SerialGPS.read();
+        clearCount++;
     }
     
-    // Serial1 for GPS
-    Serial1.begin(9600);
-    Serial1.setRx(PB7);
-    Serial1.setTx(PB6);
-    Serial.println("<DEBUG:GPS_UART_INIT:9600>");
+    if (clearCount > 0) {
+        Serial.print("<DEBUG:GPS_BUFFER_CLEARED:");
+        Serial.print(clearCount);
+        Serial.println(" BYTES>");
+    }
+      // Send test commands to GPS module
+    Serial.println("<DEBUG:GPS_SENDING_TEST_COMMANDS>");
+    
+    // Send a simple NMEA test command
+    SerialGPS.println("$PMTK000*32");
+    SerialGPS.flush();
+    delay(100);
+    
+    // Send a UBX command (ping)
+    uint8_t pingCmd[] = {0xB5, 0x62, 0x01, 0x00, 0x00, 0x00, 0x01, 0x21};
+    SerialGPS.write(pingCmd, sizeof(pingCmd));
+    SerialGPS.flush();
     
     // Process any initial GPS data to help TinyGPSPlus
+    Serial.println("<DEBUG:GPS_WAITING_FOR_RESPONSE>");
     int gpsCharsProcessed = 0;
+    int bytesReceived = 0;
     unsigned long gpsCheckStart = millis();
-    while (millis() - gpsCheckStart < 1000) { // Check for 1 second
-        if (Serial1.available()) {
-            char c = Serial1.read();
+      // Sample for 2 seconds (increased from 1) to allow for slower responses
+    while (millis() - gpsCheckStart < 2000) {
+        if (SerialGPS.available()) {
+            char c = SerialGPS.read();
+            bytesReceived++;
+            
+            // Print first 20 bytes as hex for debugging
+            if (bytesReceived <= 20) {
+                Serial.print(c, HEX);
+                Serial.print(" ");
+            }
+            
             if (gps.encode(c)) {
                 gpsCharsProcessed++;
             }
         }
     }
-    Serial.print("<DEBUG:GPS_INITIAL_CHARS_PROCESSED:");
+    
+    Serial.println(); // New line after hex dump
+    Serial.print("<DEBUG:GPS_INITIAL_RESPONSE:BYTES=");
+    Serial.print(bytesReceived);
+    Serial.print(",PROCESSED=");
     Serial.print(gpsCharsProcessed);
     Serial.println(">");
+      // If we didn't get any response, try a more thorough diagnosis
+    if (bytesReceived == 0) {
+        Serial.println("<DEBUG:GPS_NO_RESPONSE_AT_9600_PERFORMING_DIAGNOSTICS>");
+          // Try 115200 (some GPS modules default to this)
+        SerialGPS.end();
+        delay(100);
+        SerialGPS.begin(115200);
+        delay(100);
+        
+        // Send test message
+        SerialGPS.println("$PMTK000*32");
+        SerialGPS.flush();
+        
+        // Check for response at 115200
+        bytesReceived = 0;
+        gpsCheckStart = millis();
+        while (millis() - gpsCheckStart < 500) { // Short check
+            if (SerialGPS.available()) {
+                SerialGPS.read();
+                bytesReceived++;
+            }
+        }
+        
+        Serial.print("<DEBUG:GPS_AT_115200_BAUD:BYTES=");
+        Serial.print(bytesReceived);
+        Serial.println(">");
+          // Return to 9600 baud as that should be correct for UBLOX MAX-M10S
+        SerialGPS.end();
+        delay(100);
+        SerialGPS.begin(9600);
+        
+        // Run comprehensive connection test if we're still not getting data
+        if (bytesReceived == 0) {
+            Serial.println("<DEBUG:GPS_STILL_NO_RESPONSE_TESTING_CONNECTION>");
+            bool connectionOk = testGpsConnection();
+            
+            if (!connectionOk) {
+                Serial.println("<DEBUG:GPS_CONNECTION_TEST_FAILED>");
+                Serial.println("<DEBUG:GPS_CHECK_HARDWARE:VERIFY_POWER_AND_WIRING>");
+                Serial.println("<DEBUG:GPS_PINS:TX=PB6,RX=PB7>");
+                Serial.println("<DEBUG:GPS_COMMON_ISSUES:1.LOOSE_WIRING_2.NO_POWER_3.TX/RX_SWAPPED>");
+            }
+        }
+    }
     
     // Initialize RGB LED
     statusLed.begin();
@@ -697,51 +803,151 @@ bool SensorManager::updateWithDiagnostics() {
 }
 
 void SensorManager::processGPS() {
-    // Simply process all available GPS data directly with TinyGPSPlus
+    // Enhanced GPS data processing with robust error recovery
     unsigned int bytesProcessed = 0;
     static unsigned long lastGpsResetTime = 0;
-    const unsigned long GPS_RESET_INTERVAL = 120000; // Reset GPS UART every 2 minutes if no fix
+    static unsigned long lastDataCheck = 0;
+    static unsigned long lastCharsProcessed = 0;
+    static unsigned int consecutiveNoDataCount = 0;
+    const unsigned long GPS_RESET_INTERVAL = 60000; // Reset GPS UART every 1 minute if no fix (reduced from 2 min)
+    const unsigned long DATA_CHECK_INTERVAL = 3000; // Check for data flow every 3 seconds
     
-    // Check if GPS needs a reset (if we haven't received a fix in a while)
+    // Check if we're getting any data from the GPS module
+    if (millis() - lastDataCheck >= DATA_CHECK_INTERVAL) {
+        unsigned long currentCharsProcessed = gps.charsProcessed();
+        
+        // Compare with previous check to see if we're getting new data
+        if (currentCharsProcessed == lastCharsProcessed) {
+            // No new data received since last check
+            consecutiveNoDataCount++;
+            
+            #if DEBUG_SENSORS
+            Serial.print("<DEBUG:GPS_NO_DATA_FLOW:COUNT=");
+            Serial.print(consecutiveNoDataCount);
+            Serial.print(",SERIALGPS_AVAILABLE=");
+            Serial.print(SerialGPS.available());
+            Serial.print(",CHARS_PROCESSED=");
+            Serial.print(currentCharsProcessed);
+            Serial.println(">");
+            #endif
+            
+            // After 3 consecutive no-data checks (9 seconds), try hardware recovery
+            if (consecutiveNoDataCount >= 3) {
+                // Reset GPS connection with extended diagnostics
+                #if DEBUG_SENSORS
+                Serial.println("<DEBUG:GPS_HARDWARE_RECOVERY_ATTEMPT>");
+                #endif
+                
+                // Check if UART TX/RX lines might be swapped or disconnected
+                Serial.println("<DEBUG:GPS_TESTING_PINS>");
+                
+                // End and reinitialize SerialGPS
+                SerialGPS.end();
+                delay(200);
+                
+                // No need to explicitly configure pins as they're handled in the SerialGPS constructor
+                
+                // Restart SerialGPS
+                SerialGPS.begin(9600);
+                delay(100);
+                  // Clear any pending data
+                while (SerialGPS.available()) {
+                    SerialGPS.read();
+                }
+                
+                // Send a test message and some configuration commands
+                Serial.println("<DEBUG:GPS_SENDING_TEST_SEQUENCE>");
+                
+                // Send a basic NMEA command to test connectivity
+                SerialGPS.println("$PMTK000*32"); // Test command (should get a response if GPS is working)
+                delay(100);
+                
+                // Send UBLOX configuration commands with flush after each one
+                // UBX-CFG-PMS - Set power mode to full power for better reception
+                uint8_t powerMode[] = {0xB5, 0x62, 0x06, 0x86, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x95, 0x61};
+                SerialGPS.write(powerMode, sizeof(powerMode));
+                SerialGPS.flush();
+                delay(100);
+                  // UBX-CFG-GNSS - Enable GPS+GLONASS for better coverage
+                uint8_t enableSystems[] = {0xB5, 0x62, 0x06, 0x3E, 0x3C, 0x00, 0x00, 0x00, 0x20, 0x07, 0x00, 0x08, 0x10, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 0x04, 0x08, 0x00, 0x00, 0x00, 0x01, 0x01, 0x03, 0x08, 0x10, 0x00, 0x00, 0x00, 0x01, 0x01, 0x04, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x01, 0x05, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x01, 0x06, 0x08, 0x0E, 0x00, 0x00, 0x00, 0x01, 0x01, 0x2C, 0x4B};
+                SerialGPS.write(enableSystems, sizeof(enableSystems));
+                SerialGPS.flush();
+                delay(100);
+                
+                // Also send NMEA command to set update rate to 5Hz (works on most GPS modules)
+                SerialGPS.println("$PMTK220,200*2C"); // 5Hz update rate (200ms)
+                SerialGPS.flush();
+                
+                // Reset counters to give the GPS time to respond
+                consecutiveNoDataCount = 0;
+                lastGpsResetTime = millis();
+                
+                // Sample for responses for a short period
+                Serial.println("<DEBUG:GPS_SAMPLING_FOR_RESPONSE>");
+                unsigned long sampleStart = millis();
+                int bytesReceived = 0;
+                  // Sample for 1 second to see if we get any response
+                while (millis() - sampleStart < 1000) {
+                    if (SerialGPS.available()) {
+                        char c = SerialGPS.read();
+                        bytesReceived++;
+                        gps.encode(c);
+                        
+                        #if DEBUG_SENSORS
+                        // Print first 20 bytes of raw data to help debug
+                        if (bytesReceived <= 20) {
+                            Serial.print(c, HEX);
+                            Serial.print(" ");
+                        }
+                        #endif
+                    }
+                }
+                
+                #if DEBUG_SENSORS
+                Serial.print("<DEBUG:GPS_RECOVERY_RESPONSE_BYTES=");
+                Serial.print(bytesReceived);
+                Serial.println(">");
+                #endif
+            }
+        } else {
+            // We're getting new data, reset the counter
+            consecutiveNoDataCount = 0;
+            lastCharsProcessed = currentCharsProcessed;
+            
+            #if DEBUG_SENSORS
+            static unsigned long lastDataFlowTime = 0;
+            if (millis() - lastDataFlowTime > 30000) { // Don't spam log
+                Serial.print("<DEBUG:GPS_DATA_FLOW_OK:CHARS=");
+                Serial.print(currentCharsProcessed);
+                Serial.println(">");
+                lastDataFlowTime = millis();
+            }
+            #endif
+        }
+        
+        lastDataCheck = millis();
+    }
+      // Standard fix timeout recovery (checks if we're getting data but no fix)
     if (millis() - lastGpsResetTime > GPS_RESET_INTERVAL && 
         gps.charsProcessed() > 5000 && gps.sentencesWithFix() == 0) {
         
-        // Reset the GPS UART connection
+        // If we're getting data but no fix, try sending config commands again
         #if DEBUG_SENSORS
-        Serial.println("<DEBUG:GPS_RESET_UART:NO_FIX_TIMEOUT>");
+        Serial.println("<DEBUG:GPS_NO_FIX_TIMEOUT_RECONFIGURING>");
         #endif
         
-        // Save current Serial1 configuration
-        int currentBaud = 9600;  // We know we're using 9600 baud
-        
-        // Close and reopen the Serial1 port
-        Serial1.end();
-        delay(100);
-        Serial1.begin(currentBaud);
-        Serial1.setRx(PB7);
-        Serial1.setTx(PB6);
-        
-        // Clear both input buffer and TinyGPSPlus object
-        while (Serial1.available()) {
-            Serial1.read();
-        }
-        
-        // Send UBLOX config commands to ensure GPS is in proper mode
-        // UBX-CFG-PMS - Set power mode to normal operation
-        uint8_t powerMode[] = {0xB5, 0x62, 0x06, 0x86, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x95, 0x61};
-        Serial1.write(powerMode, sizeof(powerMode));
-        
-        // UBX-CFG-GNSS - Enable GPS+GLONASS for better coverage
-        uint8_t enableSystems[] = {0xB5, 0x62, 0x06, 0x3E, 0x3C, 0x00, 0x00, 0x00, 0x20, 0x07, 0x00, 0x08, 0x10, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 0x04, 0x08, 0x00, 0x00, 0x00, 0x01, 0x01, 0x03, 0x08, 0x10, 0x00, 0x00, 0x00, 0x01, 0x01, 0x04, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x01, 0x05, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x01, 0x06, 0x08, 0x0E, 0x00, 0x00, 0x00, 0x01, 0x01, 0x2C, 0x4B};
-        Serial1.write(enableSystems, sizeof(enableSystems));
+        // Send configuration commands to improve satellite acquisition
+        // UBX-CFG-NAV5 - Set to airborne<1g dynamic model for better acquisition
+        uint8_t dynamicModel[] = {0xB5, 0x62, 0x06, 0x24, 0x24, 0x00, 0xFF, 0xFF, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x10, 0x27, 0x00, 0x00, 0x05, 0x00, 0xFA, 0x00, 0xFA, 0x00, 0x64, 0x00, 0x2C, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16, 0xDC};
+        SerialGPS.write(dynamicModel, sizeof(dynamicModel));
+        SerialGPS.flush();
         
         // Update the last reset time
         lastGpsResetTime = millis();
     }
-    
-    // Process available data
-    while (Serial1.available() > 0) {
-        char c = Serial1.read();
+      // Process all available data
+    while (SerialGPS.available() > 0) {
+        char c = SerialGPS.read();
         if (gps.encode(c)) {
             bytesProcessed++;
         }
@@ -1343,4 +1549,81 @@ void SensorManager::setStatusLED(uint8_t r, uint8_t g, uint8_t b) {
     statusLed.show();
 }
 
-// We're now using FrameCodec::calculateSensorPacketCRC instead of this local implementation
+// Utility function to test GPS wiring and communications
+// This should be called when debugging GPS connection issues
+bool SensorManager::testGpsConnection() {
+    #if DEBUG_SENSORS
+    Serial.println("<DEBUG:GPS_CONNECTION_TEST_STARTED>");
+    #endif
+    
+    // Step 1: Check TX output by toggling it and seeing if we can detect it on RX
+    // (Only works if there's a loopback between TX and RX, which would indicate wrong wiring)
+    pinMode(PB6, OUTPUT);  // TX pin
+    pinMode(PB7, INPUT_PULLUP); // RX pin with pull-up
+    
+    // Get current state for reference
+    int initialRxState = digitalRead(PB7);
+    
+    #if DEBUG_SENSORS
+    Serial.print("<DEBUG:GPS_INITIAL_PIN_STATES:TX=");
+    Serial.print(digitalRead(PB6));
+    Serial.print(",RX=");
+    Serial.print(initialRxState);
+    Serial.println(">");
+    #endif
+    
+    // Toggle TX pin rapidly and see if RX pin follows (would indicate a short or loopback)
+    bool rxFollowsTx = false;
+    for (int i = 0; i < 5; i++) {
+        digitalWrite(PB6, HIGH);
+        delayMicroseconds(100);
+        if (digitalRead(PB7) != initialRxState) {
+            rxFollowsTx = true;
+            break;
+        }
+        
+        digitalWrite(PB6, LOW);
+        delayMicroseconds(100);
+        if (digitalRead(PB7) != initialRxState) {
+            rxFollowsTx = true;
+            break;
+        }
+    }
+    
+    // Properly initialize UART - no need to set pins as they're in the constructor
+    SerialGPS.end();
+    delay(100);
+    SerialGPS.begin(9600);
+    
+    // Step 2: Send test commands and measure response
+    SerialGPS.println("$PMTK000*32"); // Test command that most GPS modules respond to
+    SerialGPS.flush();
+    
+    // Wait for response with timeout
+    unsigned long startTime = millis();
+    int bytesReceived = 0;
+    while (millis() - startTime < 1000 && bytesReceived < 50) {
+        if (SerialGPS.available()) {
+            SerialGPS.read();
+            bytesReceived++;
+        }
+    }
+    
+    // Results
+    #if DEBUG_SENSORS
+    Serial.print("<DEBUG:GPS_CONNECTION_TEST:PIN_LOOPBACK=");
+    Serial.print(rxFollowsTx ? "YES" : "NO");
+    Serial.print(",BYTES_RECEIVED=");
+    Serial.print(bytesReceived);
+    
+    if (rxFollowsTx) {
+        Serial.println(",DIAGNOSIS=POSSIBLE_TX_RX_SHORT_OR_SWAP>");
+    } else if (bytesReceived > 0) {
+        Serial.println(",DIAGNOSIS=CONNECTION_OK>");
+    } else {
+        Serial.println(",DIAGNOSIS=NO_RESPONSE_CHECK_POWER_AND_WIRING>");
+    }
+    #endif
+    
+    return (bytesReceived > 0);
+}
