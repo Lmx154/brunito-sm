@@ -26,6 +26,8 @@ bool cmdReady = false;
 // Variables for task scheduling
 unsigned long lastHeartbeatUpdate = 0;
 unsigned long lastLoraCheck = 0;
+unsigned long lastBandwidthCheck = 0;
+const unsigned long BANDWIDTH_CHECK_INTERVAL = 60000; // Check bandwidth every 60 seconds
 
 // CSV output control
 bool outputCsvFormat = true;
@@ -52,49 +54,38 @@ void parseTelemToCsv(const char* frame) {
     payload[p++] = frame[i++];
   }
   payload[p] = '\0';  // Null terminate
-  
-  // Debug output
-  Serial.print("<DEBUG:TELEM_PAYLOAD:"); 
-  Serial.print(payload);
-  Serial.println(">");
-  
   // Count commas to determine format (ARMED or RECOVERY)
   int commaCount = 0;
   for (size_t j = 0; j < p; j++) {
     if (payload[j] == ',') commaCount++;
   }
-  
-  Serial.print("<DEBUG:COMMA_COUNT:"); 
-  Serial.print(commaCount);
-  Serial.println(">");
-  
   // Print CSV header if needed
   if (!csvHeaderPrinted) {
-    if (commaCount == 13) {  // ARMED format (14 values)
+    if (commaCount == 14) {  // ARMED format (15 values - now includes sats)
       Serial.println("pkID,timestamp_ms,alt_m,accel_x_g,accel_y_g,accel_z_g,"
                     "gyro_x_dps,gyro_y_dps,gyro_z_dps,"
-                    "mag_x_uT,mag_y_uT,mag_z_uT,lat_deg,lon_deg");
-    } else if (commaCount == 3) {  // RECOVERY format (4 values)
-      Serial.println("timestamp_ms,lat_deg,lon_deg,alt_m");
+                    "mag_x_uT,mag_y_uT,mag_z_uT,lat_deg,lon_deg,sats");
+    } else if (commaCount == 4) {  // RECOVERY format (5 values - now includes sats)
+      Serial.println("timestamp_ms,lat_deg,lon_deg,alt_m,sats");
     }
     csvHeaderPrinted = true;
   }
   
   // Parse values and apply scaling based on format
-  if (commaCount == 13) {  // ARMED format
-    // Parse all 14 values
-    long values[14];
+  if (commaCount == 14) {  // ARMED format
+    // Parse all 15 values
+    long values[15];
     int valueIndex = 0;
     char* token = strtok(payload, ",");
     
-    while (token != NULL && valueIndex < 14) {
+    while (token != NULL && valueIndex < 15) {
       values[valueIndex++] = atol(token);
       token = strtok(NULL, ",");
     }
     
     // Apply scaling and print CSV line
-    if (valueIndex == 14) {
-      // Values: pkID, timestamp, alt, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, mag_x, mag_y, mag_z, lat, lon
+    if (valueIndex == 15) {
+      // Values: pkID, timestamp, alt, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, mag_x, mag_y, mag_z, lat, lon, sats
       Serial.print(values[0]); Serial.print(",");                   // pkID (raw)
       Serial.print(values[1]); Serial.print(",");                   // timestamp_ms (raw)
       Serial.print(values[2] / 100.0f, 2); Serial.print(",");       // alt_m (cm → m)
@@ -108,28 +99,30 @@ void parseTelemToCsv(const char* frame) {
       Serial.print(values[10] / 10.0f, 1); Serial.print(",");       // mag_y_uT (0.1 μT → μT)
       Serial.print(values[11] / 10.0f, 1); Serial.print(",");       // mag_z_uT (0.1 μT → μT)
       Serial.print(values[12] / 10000000.0f, 7); Serial.print(","); // lat_deg (1e7 → degrees)
-      Serial.print(values[13] / 10000000.0f, 7);                    // lon_deg (1e7 → degrees)
+      Serial.print(values[13] / 10000000.0f, 7); Serial.print(","); // lon_deg (1e7 → degrees)
+      Serial.print(values[14]);                                     // sats (raw)
       Serial.println();
     }
   } 
-  else if (commaCount == 3) {  // RECOVERY format
-    // Parse all 4 values
-    long values[4];
+  else if (commaCount == 4) {  // RECOVERY format
+    // Parse all 5 values
+    long values[5];
     int valueIndex = 0;
     char* token = strtok(payload, ",");
     
-    while (token != NULL && valueIndex < 4) {
+    while (token != NULL && valueIndex < 5) {
       values[valueIndex++] = atol(token);
       token = strtok(NULL, ",");
     }
     
     // Apply scaling and print CSV line
-    if (valueIndex == 4) {
-      // Values: timestamp, lat, lon, alt
+    if (valueIndex == 5) {
+      // Values: timestamp, lat, lon, alt, sats
       Serial.print(values[0]); Serial.print(",");                  // timestamp_ms (raw)
       Serial.print(values[1] / 10000000.0f, 7); Serial.print(","); // lat_deg (1e7 → degrees)
       Serial.print(values[2] / 10000000.0f, 7); Serial.print(","); // lon_deg (1e7 → degrees)
-      Serial.print(values[3] / 100.0f, 2);                         // alt_m (cm → m)
+      Serial.print(values[3] / 100.0f, 2); Serial.print(",");      // alt_m (cm → m)
+      Serial.print(values[4]);                                     // sats (raw)
       Serial.println();
     }
   }
@@ -162,12 +155,22 @@ void handleLoraPacket(LoraPacket* packet) {
     char msgBuffer[LORA_MAX_PACKET_SIZE + 1]; // +1 for null terminator
     memcpy(msgBuffer, packet->data, packet->len);
     msgBuffer[packet->len] = '\0'; // Ensure null termination
+      // Debug telemetry reception with RSSI information
+    char debugBuffer[96];
+    int16_t rssi = loraManager.getLastRssi();
+    float snr = loraManager.getLastSnr();
     
-    // Debug telemetry reception with RSSI information
-    char debugBuffer[64];
+    // Add rate throttling indicator to help user understand if packets are being throttled
+    const char* rateIndicator = "NORMAL";
+    if (rssi < -110) {
+        rateIndicator = "THROTTLED_4HZ";
+    } else if (rssi < -100) {
+        rateIndicator = "THROTTLED_10HZ";
+    }
+    
     snprintf(debugBuffer, sizeof(debugBuffer), 
-             "<DEBUG:TELEM_RECEIVED:RSSI=%d,LEN=%u>", 
-             loraManager.getLastRssi(), packet->len);
+             "<DEBUG:TELEM_RECEIVED:RSSI=%d,SNR=%.1f,LEN=%u,RATE=%s>", 
+             rssi, snr, packet->len, rateIndicator);
     Serial.println(debugBuffer);
     
     // Always show the raw frame for debug purposes
@@ -338,6 +341,43 @@ void loop() {
     
     // Send ping to check link quality
     loraManager.sendPing();
+    
+    // Periodically monitor bandwidth usage
+    if (now - lastBandwidthCheck >= BANDWIDTH_CHECK_INTERVAL) {
+      lastBandwidthCheck = now;
+      loraManager.reportBandwidthUsage();
+      
+      // Calculate approximate telemetry rate based on packet count
+      static unsigned long lastPacketCount = 0;
+      static unsigned long lastRateCheckTime = 0;
+      
+      uint16_t received = loraManager.getPacketsReceived();
+      unsigned long packetsSinceLastCheck = 0;
+      if (received > lastPacketCount) {
+        packetsSinceLastCheck = received - lastPacketCount;
+      }
+      
+      float interval = (now - lastRateCheckTime) / 1000.0f;
+      if (interval > 0.1f) { // Avoid division by near-zero
+        float packetsPerSecond = packetsSinceLastCheck / interval;
+        
+        // Only report if we got some packets
+        if (packetsSinceLastCheck > 0) {
+          char rateBuffer[80];
+          snprintf(rateBuffer, sizeof(rateBuffer), 
+                  "<DEBUG:TELEM_RATE:%.1f_Hz,RSSI=%d,THROTTLING=%s>", 
+                  packetsPerSecond, 
+                  loraManager.getLastRssi(),
+                  (loraManager.getLastRssi() < -110 ? "YES" : 
+                   (loraManager.getLastRssi() < -100 ? "PARTIAL" : "NO")));
+          Serial.println(rateBuffer);
+        }
+      }
+      
+      // Update counters for next time
+      lastPacketCount = received;
+      lastRateCheckTime = now;
+    }
     
     // Periodic status updates less frequently to avoid duplicates (every 30 seconds)
     static unsigned long lastStatusUpdate = 0;

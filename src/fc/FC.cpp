@@ -48,6 +48,14 @@ void startTelemetry(uint8_t hz = 20);
 void adjustTelemRate();
 void reinitializeUart();
 
+// Global variables in FC.cpp at the top with other globals
+static const uint32_t TELEM_RATE_CHECK_INTERVAL = 5000; // Check rate every 5 seconds
+unsigned long lastRateAdjustTime = 0;  // Last time we adjusted the telemetry rate
+
+// Add to the global variables section at the top of the file
+static const uint32_t BANDWIDTH_REPORT_INTERVAL_MS = 60'000; // Report bandwidth usage every 60 seconds
+unsigned long lastBandwidthReport = 0; // For bandwidth usage reporting
+
 /**
  * Formats telemetry data from binary packets to ASCII format
  * 
@@ -58,32 +66,26 @@ void reinitializeUart();
 String formatTelem(const SensorPacket& packet, bool gpsOnly) {
   char buffer[250];
   
-  // Format date and time into a readable format: YYYY-MM-DD HH:MM:SS
-  char dateTimeStr[20];
-  snprintf(dateTimeStr, sizeof(dateTimeStr), "20%02d-%02d-%02d %02d:%02d:%02d",
-           packet.year, packet.month, packet.day, 
-           packet.hour, packet.minute, packet.second);
-  
   if (gpsOnly) {
-    // RECOVERY mode - GPS only telemetry with RTC and satellite count
-    snprintf(buffer, sizeof(buffer), "<TELEM:TIME=%s,SAT=%u,LAT=%ld,LON=%ld,ALT=%ld>", 
-             dateTimeStr,
-             packet.satellites,
+    // RECOVERY mode - GPS only telemetry with timestamp and satellite count
+    snprintf(buffer, sizeof(buffer), "<TELEM:%lu,%ld,%ld,%ld,%u>", 
+             packet.timestamp,
              packet.latitude, 
              packet.longitude, 
-             packet.altitude);
+             packet.altitude,
+             packet.satellites);
   } else {
-    // ARMED mode - Full telemetry with formatted field names for readability
+    // ARMED mode - Simplified format without field names for better parsing efficiency
     snprintf(buffer, sizeof(buffer), 
-             "<TELEM:ID=%u,TIME=%s,SAT=%u,ALT=%ld,ACCEL=%d,%d,%d,GYRO=%d,%d,%d,MAG=%d,%d,%d,GPS=%ld,%ld>",
+             "<TELEM:%u,%lu,%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u>",
              packet.packetId,
-             dateTimeStr,
-             packet.satellites,
+             packet.timestamp,
              packet.altitude,
              packet.accelX, packet.accelY, packet.accelZ,
              packet.gyroX, packet.gyroY, packet.gyroZ,
              packet.magX, packet.magY, packet.magZ,
-             packet.latitude, packet.longitude);
+             packet.latitude, packet.longitude,
+             packet.satellites);
   }
   
   return String(buffer);
@@ -96,12 +98,16 @@ String formatTelem(const SensorPacket& packet, bool gpsOnly) {
  * @param hz Desired telemetry rate in Hz
  */
 void startTelemetry(uint8_t hz) {
+  // Set the maximum desired rate
   telemRate = hz;
   
   // Cap rate based on bandwidth constraints
   if (telemRate > 20) {
     telemRate = 20; // Maximum 20 Hz
   }
+  
+  // Force immediate rate adjustment check
+  lastRateAdjustTime = 0;
   
   // Adjust telemRate based on link quality
   adjustTelemRate();
@@ -126,6 +132,16 @@ void adjustTelemRate() {
     return;
   }
   
+  unsigned long now = millis();
+  
+  // Only check and adjust rate at defined intervals
+  // This prevents excessive rate changes and allows RSSI to stabilize
+  if (now - lastRateAdjustTime < TELEM_RATE_CHECK_INTERVAL) {
+    return;
+  }
+  
+  lastRateAdjustTime = now;
+  
   int16_t rssi = loraManager.getLastRssi();
   uint8_t newRate = telemRate;
   
@@ -149,6 +165,9 @@ void adjustTelemRate() {
     char buffer[64];
     snprintf(buffer, sizeof(buffer), "<DEBUG:TELEM_RATE_ADJUSTED:%u,RSSI:%d>", telemRate, rssi);
     Serial.println(buffer);
+    
+    // Also report bandwidth usage when rate changes
+    loraManager.reportBandwidthUsage();
   }
 }
 
@@ -430,41 +449,27 @@ void uartTask() {
   // Only process telemetry data when in ARMED or RECOVERY states
   // Command responses will still be processed regardless of state (handled internally in uartManager)
   UartPacketStatus status = shouldProcessTelemetry ? uartManager.processUartData() : PACKET_NONE;
-    // Debug output for UART data availability (once every 2 seconds)
+  // Report UART statistics only occasionally for bandwidth monitoring
   static unsigned long lastUartDebugTime = 0;
   static int uartFailCount = 0;
   unsigned long currentTime = millis();
-  if (currentTime - lastUartDebugTime >= 2000) {
+  if (currentTime - lastUartDebugTime >= 10000) { // Reduced from 2s to 10s
     lastUartDebugTime = currentTime;
-      // Check if there's any UART data at all
+    
+    // Check if there's any UART data at all
     int bytesAvailable = Serial2.available();
     unsigned long timeSinceLastPacket = uartManager.getTimeSinceLastPacket();
     
-    // Enhanced UART diagnostic info with pin status
-    char buffer[128];
-    
-    // Additional pin checking when no data is coming
-    if (bytesAvailable == 0 && uartManager.getPacketsReceived() == 0) {
-      // Check digital state of RX pin - useful for troubleshooting
-      int rxPinState = digitalRead(PA2);
+    // Only report issues or periodic stats
+    if (uartManager.getCrcErrors() > 0 || bytesAvailable == 0 || currentTime % 60000 < 1000) { // Every minute or on errors
+      char buffer[128];
       snprintf(buffer, sizeof(buffer), 
-              "<DEBUG:UART_STATUS:BYTES:%d,RECV:%lu,DROPS:%lu,ERRS:%lu,LAST:%lums,RX_PIN:%d>",
-              bytesAvailable,
+              "<DEBUG:UART_STATUS:RECV:%lu,DROPS:%lu,ERRS:%lu>",
               uartManager.getPacketsReceived(),
               uartManager.getPacketsDropped(),
-              uartManager.getCrcErrors(),
-              timeSinceLastPacket,
-              rxPinState);
-    } else {
-      snprintf(buffer, sizeof(buffer), 
-              "<DEBUG:UART_STATUS:BYTES:%d,RECV:%lu,DROPS:%lu,ERRS:%lu,LAST:%lums>",
-              bytesAvailable,
-              uartManager.getPacketsReceived(),
-              uartManager.getPacketsDropped(),
-              uartManager.getCrcErrors(),
-              timeSinceLastPacket);
+              uartManager.getCrcErrors());
+      Serial.println(buffer);
     }
-    Serial.println(buffer);
       // If no data is coming in, try sending a ping to NAVC
     if (bytesAvailable == 0) {      if (uartManager.getPacketsReceived() == 0 || timeSinceLastPacket > 10000) {
         // Check RX pin state for hardware troubleshooting
@@ -528,8 +533,7 @@ void uartTask() {
     switch (stateManager.getCurrentState()) {
       case STATE_ARMED:
         // In ARMED state, format full telemetry and send over LoRa
-        if (loraManager.isInitialized()) {
-          // Check if it's time to send telemetry based on the current rate
+        if (loraManager.isInitialized()) {          // Check if it's time to send telemetry based on the current rate
           unsigned long now = millis();
           if (now - lastTelemTime >= telemPeriodMs) {
             lastTelemTime = now;
@@ -538,7 +542,21 @@ void uartTask() {
             
             // Send telemetry to debug port and LoRa
             Serial.println(telemStr);
-            Serial.println("<DEBUG:SENDING_TELEM_PACKET>");
+            
+            // Add debug information about current telemetry rate
+            static uint8_t lastReportedRate = 0;
+            if (telemRate != lastReportedRate || (now % 30000) < 50) { // Report on change or every ~30 seconds
+                char rateBuffer[64];
+                snprintf(rateBuffer, sizeof(rateBuffer), 
+                         "<DEBUG:TELEM_STATUS:RATE=%u_Hz,PERIOD=%lu_ms,RSSI=%d>", 
+                         telemRate, telemPeriodMs, loraManager.getLastRssi());
+                Serial.println(rateBuffer);
+                lastReportedRate = telemRate;
+            } else {
+                Serial.println("<DEBUG:SENDING_TELEM_PACKET>");
+            }
+            
+            // Send the packet over LoRa
             loraManager.sendPacket(LORA_TYPE_TELEM, telemStr.c_str(), telemStr.length());
             
             // Check if we need to adjust telemetry rate based on link quality
@@ -592,12 +610,22 @@ void uartTask() {
     }
     
     // Mark packet as processed
-    uartManager.markPacketProcessed();
-  } else if (status == PACKET_ERROR) {
-    // Log packet error
-    char errorBuffer[64];
-    FrameCodec::formatDebug(errorBuffer, sizeof(errorBuffer), "PACKET_ERROR:CRC");
-    Serial.println(errorBuffer);
+    uartManager.markPacketProcessed();  } else if (status == PACKET_ERROR) {
+    // Log packet errors but batch them to avoid flooding
+    static unsigned long lastCrcErrorTime = 0;
+    static uint16_t batchErrorCount = 0;
+    
+    batchErrorCount++;
+    
+    // Only log every 5 seconds or after 100 errors
+    if (currentTime - lastCrcErrorTime > 5000 || batchErrorCount >= 100) {
+      char errorBuffer[64];
+      snprintf(errorBuffer, sizeof(errorBuffer), "<DEBUG:CRC_ERRORS:%u>", batchErrorCount);
+      Serial.println(errorBuffer);
+      
+      lastCrcErrorTime = currentTime;
+      batchErrorCount = 0;
+    }
   }
   
   // Periodically report UART packet statistics
@@ -740,6 +768,12 @@ void loop() {
     
     // Process queue (send pending packets, retry failed ones)
     loraManager.checkQueue();
+    
+    // Periodically report bandwidth usage to monitor telemetry efficiency
+    if (now - lastBandwidthReport >= BANDWIDTH_REPORT_INTERVAL_MS) {
+      lastBandwidthReport = now;
+      loraManager.reportBandwidthUsage();
+    }
     
     // For more reliability, process the queue more frequently for ACKs when commands are being processed
     static unsigned long lastCommandTime = 0;

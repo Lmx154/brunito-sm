@@ -1511,8 +1511,11 @@ void SensorManager::processSensorData() {
     currentPacket.hour = rtcHour;
     currentPacket.minute = rtcMinute;
     currentPacket.second = rtcSecond;
+      // Calculate CRC-16 for the packet using FrameCodec utility
+    // We need to zero out the CRC field first to ensure consistent calculation
+    currentPacket.crc16 = 0;
     
-    // Calculate CRC-16 for the packet using FrameCodec utility
+    // Calculate CRC on all fields except the CRC itself
     currentPacket.crc16 = FrameCodec::calculateSensorPacketCRC(
         reinterpret_cast<const uint8_t*>(&currentPacket), 
         sizeof(SensorPacket)

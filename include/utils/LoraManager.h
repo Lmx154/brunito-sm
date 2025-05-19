@@ -57,12 +57,13 @@ private:
     bool initialized;
     int16_t rssi;
     float snr;
-    
-    // Statistics for link quality monitoring
+      // Statistics for link quality monitoring
     uint16_t packetsSent;
     uint16_t packetsReceived;
     uint16_t packetsLost;
-    uint32_t lastStatsResetTime;    uint32_t lastReceivedTime;   // Timestamp of last received packet from target
+    uint32_t lastStatsResetTime;
+    unsigned long totalBytesSent; // Track total bytes sent for bandwidth calculation
+    uint32_t lastReceivedTime;   // Timestamp of last received packet from target
     uint32_t connectionTimeout;  // Time in ms after which connection is considered lost
     
     // Link quality assessment through ping/pong
@@ -112,12 +113,15 @@ public:
     // Get link quality statistics
     uint16_t getPacketsSent() const { return packetsSent; }
     uint16_t getPacketsReceived() const { return packetsReceived; }
-    uint16_t getPacketsLost() const { return packetsLost; }
-    float getPacketLossRate() const { 
+    uint16_t getPacketsLost() const { return packetsLost; }    float getPacketLossRate() const { 
         return (packetsSent > 0) ? (float)packetsLost / (float)packetsSent : 0.0f; 
     }
     void resetStats() { packetsSent = packetsReceived = packetsLost = 0; lastStatsResetTime = millis(); }
     uint32_t getStatsDuration() const { return millis() - lastStatsResetTime; }
+    
+    // Bandwidth usage reporting
+    void reportBandwidthUsage();
+    unsigned long getTotalBytesSent() const;
     
     // Callback for received data
     void (*onPacketReceived)(LoraPacket* packet) = nullptr;

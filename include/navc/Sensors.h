@@ -10,8 +10,8 @@
 #include <BMM150.h> // Seeed Studio BMM150 library
 #include <Adafruit_NeoPixel.h>
 
-// Set to 1 to enable debug output
-#define DEBUG_SENSORS 1  // Enable debug output for diagnostics
+// Set to 0 to disable sensor debug output, 1 to enable
+#define DEBUG_SENSORS 0  // Disabled for production use
 
 // Sensor reading and fusion rates
 #define SENSOR_SAMPLE_RATE_HZ 100

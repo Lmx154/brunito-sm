@@ -163,7 +163,7 @@ Commands are prioritized:
 Live telemetry enables real-time flight monitoring, active in ARMED (full sensors) and RECOVERY (GPS-only) states. It uses minimal ASCII frames for backend parsing.
 
 #### Formats
-- **ARMED**: `<TELEM:pkID,timestamp,alt,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z,mag_x,mag_y,mag_z,lat,lon>`
+- **ARMED**: `<TELEM:pkID,timestamp,alt,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z,mag_x,mag_y,mag_z,lat,lon,sats>`
   | Field     | Type     | Scaling        | Description               |
   |-----------|----------|----------------|---------------------------|
   | pkID      | uint16_t | None           | Packet ID                 |
@@ -180,13 +180,15 @@ Live telemetry enables real-time flight monitoring, active in ARMED (full sensor
   | mag_z     | int16_t  | µT * 10        | Magnetometer Z            |
   | lat       | int32_t  | degrees * 1e7  | Latitude                  |
   | lon       | int32_t  | degrees * 1e7  | Longitude                 |
-- **RECOVERY**: `<TELEM:timestamp,lat,lon,alt>`
+  | sats      | uint8_t  | None           | GPS satellite count       |
+- **RECOVERY**: `<TELEM:timestamp,lat,lon,alt,sats>`
   | Field     | Type     | Scaling        | Description               |
   |-----------|----------|----------------|---------------------------|
   | timestamp | uint32_t | milliseconds   | Time since start          |
   | lat       | int32_t  | degrees * 1e7  | Latitude                  |
   | lon       | int32_t  | degrees * 1e7  | Longitude                 |
   | alt       | int32_t  | meters * 100   | Altitude                  |
+  | sats      | uint8_t  | None           | GPS satellite count       |
 
 #### Encoding
 - **NAVC**: Sends 50 Hz binary packets (38 bytes) to FC.
@@ -214,11 +216,10 @@ Live telemetry enables real-time flight monitoring, active in ARMED (full sensor
 
 #### Decoding
 - **Backend**: Split on commas, convert to integers, apply scaling (e.g., alt / 100.0).
-- **Example Python**:
-  ```python
+- **Example Python**:  ```python
   def parse_telem(payload):
       fields = payload.strip('<TELEM:>').split(',')
-      if len(fields) == 14:  # ARMED
+      if len(fields) == 15:  # ARMED
           return {
               'pkID': int(fields[0]),
               'timestamp': int(fields[1]),
@@ -227,14 +228,16 @@ Live telemetry enables real-time flight monitoring, active in ARMED (full sensor
               'gyro': [int(f) / 100.0 for f in fields[6:9]],
               'mag': [int(f) / 10.0 for f in fields[9:12]],
               'lat': int(fields[12]) / 1e7,
-              'lon': int(fields[13]) / 1e7
+              'lon': int(fields[13]) / 1e7,
+              'sats': int(fields[14])
           }
-      elif len(fields) == 4:  # RECOVERY
+      elif len(fields) == 5:  # RECOVERY
           return {
               'timestamp': int(fields[0]),
               'lat': int(fields[1]) / 1e7,
               'lon': int(fields[2]) / 1e7,
-              'alt': int(fields[3]) / 100.0
+              'alt': int(fields[3]) / 100.0,
+              'sats': int(fields[4])
           }
       return None
   ```

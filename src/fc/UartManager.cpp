@@ -1,4 +1,5 @@
 #include "../include/fc/UartManager.h"
+#include "../include/utils/FrameCodec.h"
 
 UartManager::UartManager() : 
     receiveBufferIndex(0),
@@ -148,10 +149,11 @@ void UartManager::storeExaminedByte(uint8_t byte) {
 }
 
 bool UartManager::verifyCrc16(const SensorPacket& packet) {
-    // Calculate CRC-16 for packet data (excluding the CRC itself)
-    uint16_t calculatedCrc = calculateCrc16(
+    // Calculate CRC-16 for packet data using FrameCodec to ensure consistency
+    // with the NAVC side calculation
+    uint16_t calculatedCrc = FrameCodec::calculateSensorPacketCRC(
         reinterpret_cast<const uint8_t*>(&packet),
-        sizeof(SensorPacket) - sizeof(uint16_t)
+        sizeof(SensorPacket)
     );
     
     // Compare with the CRC in the packet

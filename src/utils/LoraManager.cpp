@@ -40,6 +40,7 @@ LoraManager::LoraManager() :
     packetsReceived(0),
     packetsLost(0),
     lastStatsResetTime(0),
+    totalBytesSent(0),
     lastReceivedTime(millis()), // Initialize to current time to avoid showing link down on startup
     connectionTimeout(30000),   // Default timeout of 30 seconds
     pingEnabled(false),         // Ping disabled by default
@@ -256,9 +257,12 @@ void LoraManager::checkQueue() {
                     snprintf(logBuffer, sizeof(logBuffer), "LoRa TX: type=%d, id=%d, retry=%d", 
                             outQueue[i].type, outQueue[i].id, queueRetries[i]);
                     Serial.println(logBuffer);
-                }
-                  // Handle transmission result
-                if (state == RADIOLIB_ERR_NONE) {                // Different handling based on packet type
+                }                // Handle transmission result
+                if (state == RADIOLIB_ERR_NONE) {
+                    // Track bytes sent for bandwidth monitoring (add header size + data)
+                    totalBytesSent += outQueue[i].len + 6; // 6 bytes for header
+                
+                    // Different handling based on packet type
                     if (outQueue[i].type == LORA_TYPE_ACK || outQueue[i].type == LORA_TYPE_STATUS || 
                         outQueue[i].type == LORA_TYPE_PING || outQueue[i].type == LORA_TYPE_PONG) {
                         // No need to wait for ACKs on ACK packets, STATUS messages, or ping/pong, remove from queue immediately
@@ -651,4 +655,44 @@ int LoraManager::findFreeQueueSlot() {
         }
     }
     return -1;
+}
+
+// Add a method to get statistics about telemetry bandwidth usage
+void LoraManager::reportBandwidthUsage() {
+    if (!isInitialized()) {
+        return;
+    }
+    
+    static unsigned long lastByteCount = 0;
+    static unsigned long lastReportTime = 0;
+    unsigned long currentTime = millis();
+    
+    // Allow immediate reporting if parameter is true or use time interval
+    unsigned long totalBytes = getTotalBytesSent();
+    unsigned long bytesSinceLast = totalBytes - lastByteCount;
+    float interval = (currentTime - lastReportTime) / 1000.0f;
+    
+    // Avoid division by zero
+    if (interval < 0.001f) interval = 0.001f;
+    
+    float bytesPerSecond = bytesSinceLast / interval;
+    
+    char buffer[128];
+    snprintf(buffer, sizeof(buffer), 
+            "<DEBUG:BANDWIDTH:BPS=%.1f,TOTAL_BYTES=%lu,PKT_SENT=%u,PKT_LOST=%u,LOSS_RATE=%.1f%%,RSSI=%d,SNR=%.1f>",
+            bytesPerSecond,
+            totalBytes,
+            packetsSent, packetsLost,
+            getPacketLossRate() * 100.0f,
+            rssi, snr);
+    
+    Serial.println(buffer);
+    
+    lastByteCount = totalBytes;
+    lastReportTime = currentTime;
+}
+
+// Helper method to get total bytes sent
+unsigned long LoraManager::getTotalBytesSent() const {
+    return totalBytesSent;
 }
