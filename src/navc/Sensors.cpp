@@ -1,51 +1,12 @@
 #include "../include/navc/Sensors.h"
 #include "../include/utils/FrameCodec.h"
 
-// BMM150 (Magnetometer) utility functions
-static void bmm150_delay_us(uint32_t period, void *intf_ptr) {
-    delayMicroseconds(period);
-}
-
-static int8_t bmm150_i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t len, void *intf_ptr) {
-    struct bmm150_user_data *user_data = (struct bmm150_user_data *)intf_ptr;
-    uint8_t dev_id = user_data->dev_addr;
-    
-    Wire.beginTransmission(dev_id);
-    Wire.write(reg_addr);
-    if (Wire.endTransmission() != 0) {
-        return BMM150_E_DEV_NOT_FOUND;
-    }
-    
-    // Cast len to uint8_t since Wire.requestFrom expects 8-bit value
-    Wire.requestFrom(dev_id, (uint8_t)len);
-    if (Wire.available() != (int)len) {
-        return BMM150_E_DEV_NOT_FOUND;
-    }
-    
-    for (uint32_t i = 0; i < len; i++) {
-        reg_data[i] = Wire.read();
-    }
-    
-    return BMM150_OK;
-}
-
-static int8_t bmm150_i2c_write(uint8_t reg_addr, const uint8_t *reg_data, uint32_t len, void *intf_ptr) {
-    struct bmm150_user_data *user_data = (struct bmm150_user_data *)intf_ptr;
-    uint8_t dev_id = user_data->dev_addr;
-    
-    Wire.beginTransmission(dev_id);
-    Wire.write(reg_addr);
-    
-    for (uint32_t i = 0; i < len; i++) {
-        Wire.write(reg_data[i]);
-    }
-    
-    if (Wire.endTransmission() != 0) {
-        return BMM150_E_DEV_NOT_FOUND;
-    }
-    
-    return BMM150_OK;
-}
+// Global variables to cache valid magnetometer readings
+// These are shared between readMagnetometer() and processSensorData()
+bool SensorManager_hasValidReadingEver = false;
+int16_t SensorManager_lastValidX = 0;
+int16_t SensorManager_lastValidY = 0;
+int16_t SensorManager_lastValidZ = 0;
 
 SensorManager::SensorManager() : 
     i2c(&Wire),
@@ -63,10 +24,10 @@ SensorManager::SensorManager() :
     rtcMinute(0),
     rtcSecond(0)
 {
-    // Initialize structs and arrays to zeros
+    // Initialize arrays to zeros
     memset(accelData, 0, sizeof(accelData));
     memset(gyroData, 0, sizeof(gyroData));
-    memset(&magData, 0, sizeof(magData));
+    memset(magData, 0, sizeof(magData)); // Ensure magData is initially zeroed
     memset(&currentPacket, 0, sizeof(currentPacket));
     
     temperature = 0.0f;
@@ -92,11 +53,9 @@ bool SensorManager::begin() {
     Wire.setSCL(PB8); // Set SCL pin to PB8
     Wire.setSDA(PB9); // Set SDA pin to PB9
     Wire.begin();
-    Wire.setClock(400000); // 400 kHz
-    
-    // Serial2 for UART communication with FC is initialized in NAVC.cpp    // Initialize Serial1 for GPS with proper configuration
-    // STM32 syntax: Serial1.begin(baudrate, config, rx_pin, tx_pin);
-    Serial1.begin(9600, SERIAL_8N1);  // 8 data bits, no parity, 1 stop bit
+    Wire.setClock(100000); // 100 kHz for better stability with BMM150 (changed from 400kHz)
+      // Initialize Serial1 for GPS with proper configuration
+    Serial1.begin(9600); // UBLOX MAX-M10S default rate is 9600
     Serial1.setRx(PB7);  // UBLOX MAX M10S GPS RX pin
     Serial1.setTx(PB6);  // UBLOX MAX M10S GPS TX pin
     
@@ -105,23 +64,62 @@ bool SensorManager::begin() {
         Serial1.read();
     }
     
-    // Ensure the Serial1 configuration is stable
+    delay(200); // Longer delay for GPS UART to stabilize
+    
+    // Set GPS to navigation mode with improved satellite acquisition
+    // UBX-CFG-PMS - Set power mode to full tracking power for faster acquisition
+    uint8_t powerMode[] = {0xB5, 0x62, 0x06, 0x86, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x95, 0x61};
+    Serial1.write(powerMode, sizeof(powerMode));
     delay(100);
     
-    // Process any incoming GPS data to initialize the parser
+    // UBX-CFG-GNSS - Enable GPS+GLONASS for better satellite acquisition
+    uint8_t enableSystems[] = {0xB5, 0x62, 0x06, 0x3E, 0x3C, 0x00, 0x00, 0x00, 0x20, 0x07, 0x00, 0x08, 0x10, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 0x04, 0x08, 0x00, 0x00, 0x00, 0x01, 0x01, 0x03, 0x08, 0x10, 0x00, 0x00, 0x00, 0x01, 0x01, 0x04, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x01, 0x05, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x01, 0x06, 0x08, 0x0E, 0x00, 0x00, 0x00, 0x01, 0x01, 0x2C, 0x4B};
+    Serial1.write(enableSystems, sizeof(enableSystems));
+    delay(100);
+    
+    // UBX-CFG-NAV5 - Set to airborne<1g dynamic model for better height accuracy
+    uint8_t dynamicModel[] = {0xB5, 0x62, 0x06, 0x24, 0x24, 0x00, 0xFF, 0xFF, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x10, 0x27, 0x00, 0x00, 0x05, 0x00, 0xFA, 0x00, 0xFA, 0x00, 0x64, 0x00, 0x2C, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16, 0xDC};
+    Serial1.write(dynamicModel, sizeof(dynamicModel));
+    delay(100);
+    
+    // UBX-CFG-RATE - Set update rate to 5Hz for better position tracking
+    uint8_t updateRate[] = {0xB5, 0x62, 0x06, 0x08, 0x06, 0x00, 0xC8, 0x00, 0x01, 0x00, 0x01, 0x00, 0xDE, 0x6A};
+    Serial1.write(updateRate, sizeof(updateRate));
+    delay(100);
+    
+    // Ensure the Serial1 configuration is stable and prime TinyGPSPlus
     for (int i = 0; i < 10; i++) {
-        while (Serial1.available()) {
-            gps.encode(Serial1.read());
+        unsigned long startTime = millis();
+        while (millis() - startTime < 100) { // Process for 100ms
+            if (Serial1.available()) {
+                gps.encode(Serial1.read());
+            }
         }
-        delay(10);
     }
     
     #if DEBUG_SENSORS
-    Serial.println("<DEBUG:GPS_UART_INITIALIZED:9600_BAUD>");
-    Serial.print("<DEBUG:GPS_INITIAL_DATA:CHARS=");
+    Serial.println("\n<DEBUG:GPS_DIAGNOSTIC_START>");
+    Serial.print("<DEBUG:GPS_CHARS_PROCESSED:");
     Serial.print(gps.charsProcessed());
-    Serial.print(",SATELLITES=");
-    Serial.print(gps.satellites.value());
+    Serial.println(">");
+    Serial.print("<DEBUG:GPS_SENTENCES_WITH_FIX:");
+    Serial.print(gps.sentencesWithFix());
+    Serial.println(">");
+    
+    // Echo raw GPS data to help diagnose connection issues
+    Serial.println("<DEBUG:RAW_GPS_DATA_SAMPLE_BEGIN>");
+    unsigned long rawStartTime = millis();
+    int charsRead = 0;
+    while (millis() - rawStartTime < 2000) { // Sample for 2 seconds
+        if (Serial1.available()) {
+            char c = Serial1.read();
+            Serial.write(c);
+            charsRead++;
+        }
+    }
+    Serial.println("\n<DEBUG:RAW_GPS_DATA_SAMPLE_END>");
+    Serial.print("<DEBUG:RAW_GPS_CHARS_READ:");
+    Serial.print(charsRead);
     Serial.println(">");
     #endif
     
@@ -155,13 +153,12 @@ bool SensorManager::begin() {
     
     // Initialize BMI088 accelerometer - create instance with I2C address
     accel = new Bmi088Accel(Wire, 0x19); // BMI088 accelerometer I2C address
-    
-    // Initialize BMI088 accelerometer
-    int status = accel->begin();
-    if (status < 0) {
+      // Initialize BMI088 accelerometer
+    int accel_status = accel->begin();
+    if (accel_status < 0) {
         #if DEBUG_SENSORS
         Serial.print("<DEBUG:BMI088_ACCEL_INIT_FAILED:");
-        Serial.print(status);
+        Serial.print(accel_status);
         Serial.println(">");
         #endif
         return false;
@@ -172,120 +169,92 @@ bool SensorManager::begin() {
     
     // Initialize BMI088 gyroscope - create instance with I2C address
     gyro = new Bmi088Gyro(Wire, 0x69); // BMI088 gyroscope I2C address
-    
-    // Initialize BMI088 gyroscope
-    status = gyro->begin();
-    if (status < 0) {
+      // Initialize BMI088 gyroscope
+    int gyro_status = gyro->begin();    if (gyro_status < 0) {
         #if DEBUG_SENSORS
         Serial.print("<DEBUG:BMI088_GYRO_INIT_FAILED:");
-        Serial.print(status);
+        Serial.print(gyro_status);
         Serial.println(">");
         #endif
         return false;
-    }    // Configure gyroscope settings - using proper enum values
-    gyro->setRange(Bmi088Gyro::RANGE_500DPS);
-    gyro->setOdr(Bmi088Gyro::ODR_400HZ_BW_47HZ); // Using a valid ODR value from the library    // Setup BMM150 magnetometer interface
-    magUserData.dev_addr = 0x13; // BMM150 I2C address
-    magUserData.intf_ptr = nullptr;
+    }    gyro->setRange(Bmi088Gyro::RANGE_500DPS);
+    gyro->setOdr(Bmi088Gyro::ODR_400HZ_BW_47HZ);
     
-    // Initialize BMM150 magnetometer
-    mag.intf_ptr = &magUserData;
-    mag.read = bmm150_i2c_read;
-    mag.write = bmm150_i2c_write;
-    mag.delay_us = bmm150_delay_us;
-    mag.intf = BMM150_I2C_INTF;
+    // Initialize BMM150 magnetometer using the Seeed Studio library
+    #if DEBUG_SENSORS
+    Serial.println("<DEBUG:BMM150_INIT_ATTEMPT>");
+    #endif
     
-    // Important: Reset I2C bus before accessing magnetometer
+    // Reset I2C bus before magnetometer initialization
     Wire.endTransmission(true);
-    delay(100); // 100ms delay for I2C stabilization
+    delay(100);
     
-    // Proper initialization with power-on-reset sequence
-    for (int attempt = 0; attempt < 3; attempt++) {
-        // Initialize BMM150 magnetometer
-        status = bmm150_init(&mag);
-        if (status == BMM150_OK) {
-            break; // Exit if initialization was successful
+    // Initialize the BMM150 sensor
+    if (mag.initialize() != BMM150_OK) {
+        #if DEBUG_SENSORS
+        Serial.println("<DEBUG:BMM150_INIT_FAILED>");
+        
+        // Try a second attempt with reset
+        Serial.println("<DEBUG:BMM150_TRYING_RESET_AND_REINIT>");
+        
+        // Toggle I2C lines to recover potentially stuck bus
+        Wire.end();
+        pinMode(PB8, OUTPUT); // SCL
+        pinMode(PB9, OUTPUT); // SDA
+        
+        for (int i = 0; i < 10; i++) {
+            digitalWrite(PB8, HIGH);
+            delay(5);
+            digitalWrite(PB8, LOW);
+            delay(5);
         }
         
-        #if DEBUG_SENSORS
-        Serial.print("<DEBUG:BMM150_INIT_ATTEMPT_FAILED:");
-        Serial.print(attempt);
-        Serial.print(",CODE=");
-        Serial.print(status);
-        Serial.println(">");
-        #endif
+        // Return pins to input mode
+        pinMode(PB8, INPUT_PULLUP);
+        pinMode(PB9, INPUT_PULLUP);
+        delay(100);
         
-        // Reset I2C bus before retry
-        Wire.endTransmission(true);
-        delay(100 * (attempt + 1)); // Increasing delay between attempts
-    }
-    
-    if (status != BMM150_OK) {
-        Serial.println("<DEBUG:BMM150_INIT_ALL_ATTEMPTS_FAILED>");
-        return false;
-    }
-    
-    Serial.println("<DEBUG:BMM150_INIT_SUCCEEDED>");    // Configure magnetometer settings for high accuracy
-    struct bmm150_settings settings;
-    
-    // First perform a soft reset (critical step)
-    uint8_t soft_reset_cmd = 0x82; // Soft reset value for BMM150
-    mag.write(0x4B, &soft_reset_cmd, 1, &mag); // 0x4B is power control register
-    delay(100);  // Wait for reset to complete
-    
-    // Check chip ID after reset to ensure communication
-    uint8_t chip_id = 0;
-    mag.read(BMM150_REG_CHIP_ID, &chip_id, 1, &mag);
-    
-    if (chip_id != BMM150_CHIP_ID) {
-        Serial.print("<DEBUG:BMM150_WRONG_CHIP_ID:");
-        Serial.print(chip_id);
-        Serial.println(">");
-        return false;
+        // Restart I2C
+        Wire.begin();
+        Wire.setClock(100000);
+        delay(100);
+        
+        if (mag.initialize() != BMM150_OK) {
+            Serial.println("<DEBUG:BMM150_INIT_FAILED_AFTER_RESET>");
+        } else {
+            Serial.println("<DEBUG:BMM150_INIT_SUCCEEDED_AFTER_RESET>");
+        }
+        #endif
     } else {
-        Serial.print("<DEBUG:BMM150_CHIP_ID_OK:");
-        Serial.print(chip_id);
-        Serial.println(">");
+        #if DEBUG_SENSORS
+        Serial.println("<DEBUG:BMM150_INIT_OK>");
+        #endif
     }
     
-    // Set power mode to normal explicitly
-    settings.pwr_mode = BMM150_POWERMODE_NORMAL;
-    status = bmm150_set_op_mode(&settings, &mag);
-    delay(50);
+    // Test read to verify magnetometer functionality
+    mag.read_mag_data();
+    float testX = mag.raw_mag_data.raw_datax;
+    float testY = mag.raw_mag_data.raw_datay;
+    float testZ = mag.raw_mag_data.raw_dataz;
     
-    if (status != BMM150_OK) {
-        Serial.print("<DEBUG:BMM150_SET_POWER_MODE_FAILED:");
-        Serial.print(status);
-        Serial.println(">");
-        return false;
-    }
+    #if DEBUG_SENSORS
+    Serial.print("<DEBUG:BMM150_TEST_DATA:X=");
+    Serial.print(testX);
+    Serial.print(",Y=");
+    Serial.print(testY);
+    Serial.print(",Z=");
+    Serial.print(testZ);
+    Serial.println(">");
     
-    // Now set required settings
-    settings.preset_mode = BMM150_PRESETMODE_HIGHACCURACY;
-    
-    // Set preset mode
-    status = bmm150_set_presetmode(&settings, &mag);
-    if (status != BMM150_OK) {
-        Serial.print("<DEBUG:BMM150_CONFIG_FAILED:");
-        Serial.print(status);
-        Serial.println(">");
-        return false;
-    }
-    
-    // Verify magnetometer is working with a test read
-    struct bmm150_mag_data test_data;
-    status = bmm150_read_mag_data(&test_data, &mag);
-    if (status != BMM150_OK) {
-        Serial.println("<DEBUG:BMM150_TEST_READ_FAILED>");
+    // Check for common error patterns
+    if (testZ == -32768) {
+        Serial.println("<DEBUG:MAG_Z_AXIS_STUCK_DETECTED:CALIBRATION_REQUIRED>");
+    } else if (testX == 0 && testY == 0 && testZ == 0) {
+        Serial.println("<DEBUG:MAG_ALL_ZEROS_DETECTED:CALIBRATION_REQUIRED>");
     } else {
-        Serial.print("<DEBUG:BMM150_TEST_READ_OK:X=");
-        Serial.print(test_data.x);
-        Serial.print(",Y=");
-        Serial.print(test_data.y);
-        Serial.print(",Z=");
-        Serial.print(test_data.z);
-        Serial.println(">");
+        Serial.println("<DEBUG:MAG_TEST_VALUES_APPEAR_NORMAL>");
     }
+    #endif
     
     // If RTC lost power, set to compile time
     if (rtc.lostPower()) {
@@ -309,8 +278,8 @@ int SensorManager::beginWithDiagnostics() {
     Wire.setSCL(PB8); // Set SCL pin to PB8
     Wire.setSDA(PB9); // Set SDA pin to PB9
     Wire.begin();
-    Wire.setClock(400000); // 400 kHz
-    Serial.println("<DEBUG:I2C_INIT:PB8_PB9_400kHz>");
+    Wire.setClock(100000); // 100 kHz for better stability with BMM150
+    Serial.println("<DEBUG:I2C_INIT:PB8_PB9_100kHz>");
     
     // Check if we can communicate with I2C bus by scanning for standard devices
     bool anyDeviceFound = false;
@@ -335,6 +304,21 @@ int SensorManager::beginWithDiagnostics() {
     Serial1.setRx(PB7);
     Serial1.setTx(PB6);
     Serial.println("<DEBUG:GPS_UART_INIT:9600>");
+    
+    // Process any initial GPS data to help TinyGPSPlus
+    int gpsCharsProcessed = 0;
+    unsigned long gpsCheckStart = millis();
+    while (millis() - gpsCheckStart < 1000) { // Check for 1 second
+        if (Serial1.available()) {
+            char c = Serial1.read();
+            if (gps.encode(c)) {
+                gpsCharsProcessed++;
+            }
+        }
+    }
+    Serial.print("<DEBUG:GPS_INITIAL_CHARS_PROCESSED:");
+    Serial.print(gpsCharsProcessed);
+    Serial.println(">");
     
     // Initialize RGB LED
     statusLed.begin();
@@ -398,34 +382,64 @@ int SensorManager::beginWithDiagnostics() {
     // Configure gyroscope settings
     gyro->setRange(Bmi088Gyro::RANGE_500DPS);
     gyro->setOdr(Bmi088Gyro::ODR_400HZ_BW_47HZ);
-    
-    // Setup BMM150 magnetometer interface
+    // Setup BMM150 magnetometer using Seeed Studio library
     Serial.println("<DEBUG:ATTEMPTING_MAG_INIT:0x13>");
-    magUserData.dev_addr = 0x13; // BMM150 I2C address
-    magUserData.intf_ptr = nullptr;
     
-    mag.intf_ptr = &magUserData;
-    mag.read = bmm150_i2c_read;
-    mag.write = bmm150_i2c_write;
-    mag.delay_us = bmm150_delay_us;
-    mag.intf = BMM150_I2C_INTF;
+    // Reset I2C bus before intensive magnetometer initialization
+    Wire.endTransmission(true);
+    delay(100);
     
-    status = bmm150_init(&mag);
-    if (status != BMM150_OK) {
-        char buffer[64];
-        snprintf(buffer, sizeof(buffer), "<DEBUG:BMM150_INIT_FAILED:CODE=%d>", status);
-        Serial.println(buffer);
+    // Initialize with retry logic
+    int8_t bmm_status = BMM150_E_ID_NOT_CONFORM;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        Serial.print("<DEBUG:BMM150_INIT_ATTEMPT:");
+        Serial.print(attempt + 1);
+        Serial.println(">");
+        
+        bmm_status = mag.initialize();
+        if (bmm_status == BMM150_OK) {
+            Serial.println("<DEBUG:MAG_INIT_OK>");
+            break;
+        } else {
+            char buffer[64];
+            snprintf(buffer, sizeof(buffer), "<DEBUG:BMM150_INIT_FAILED:CODE=%d>", bmm_status);
+            Serial.println(buffer);
+            
+            // Reset I2C bus before retry
+            Wire.endTransmission(true);
+            delay(100 * (attempt + 1));
+        }
+    }
+    
+    if (bmm_status != BMM150_OK) {
+        Serial.println("<DEBUG:BMM150_ALL_INIT_ATTEMPTS_FAILED>");
         return 6; // Error: BMM150 initialization failed
     }
-    Serial.println("<DEBUG:MAG_INIT_OK>");
     
-    // Configure magnetometer settings
-    struct bmm150_settings settings;
-    settings.preset_mode = BMM150_PRESETMODE_HIGHACCURACY;
-    status = bmm150_set_presetmode(&settings, &mag);
-    if (status != BMM150_OK) {
-        Serial.println("<DEBUG:BMM150_CONFIG_FAILED>");
-        return 7; // Error: BMM150 configuration failed
+    // Configure magnetometer settings for high accuracy mode
+    mag.set_op_mode(BMM150_NORMAL_MODE);
+    mag.set_presetmode(BMM150_PRESETMODE_HIGHACCURACY);
+    delay(50); // Wait for settings to apply
+    
+    Serial.println("<DEBUG:BMM150_PRESET_MODE_SET>");
+    
+    // Test read to verify magnetometer functionality
+    mag.read_mag_data();
+    Serial.print("<DEBUG:BMM150_TEST_DATA:X=");
+    Serial.print(mag.mag_data.x);
+    Serial.print(",Y=");
+    Serial.print(mag.mag_data.y);
+    Serial.print(",Z=");
+    Serial.print(mag.mag_data.z);
+    Serial.println(">");
+    
+    // Check for common error patterns
+    if (mag.mag_data.z == -32768) {
+        Serial.println("<DEBUG:MAG_Z_AXIS_STUCK_DETECTED:CALIBRATION_REQUIRED>");
+    } else if (mag.mag_data.x == 0 && mag.mag_data.y == 0 && mag.mag_data.z == 0) {
+        Serial.println("<DEBUG:MAG_ALL_ZEROS_DETECTED:CALIBRATION_REQUIRED>");
+    } else {
+        Serial.println("<DEBUG:MAG_TEST_VALUES_APPEAR_NORMAL>");
     }
     
     // If RTC lost power, set to compile time
@@ -434,12 +448,11 @@ int SensorManager::beginWithDiagnostics() {
         rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
     }
     
-    // Set initial LED color to indicate successful init
+    // Set initial LED color to indicate successful init (green)
     setStatusLED(0, 255, 0);
     Serial.println("<DEBUG:ALL_SENSORS_INIT_OK>");
     
-    // Return 0 for success
-    return 0;
+    return 0; // Success - return 0 instead of true to be consistent with error codes
 }
 
 void SensorManager::update() {
@@ -585,8 +598,7 @@ bool SensorManager::updateWithDiagnostics() {
         } else {
             Serial.println("<DEBUG:GYRO_NOT_INITIALIZED>");
             success = false;
-        }
-          // Read magnetometer data with retry logic
+        }        // Read magnetometer data with retry logic using the Seeed Studio library
         bool magSuccess = false;
         for (int attempt = 0; attempt < 3 && !magSuccess; attempt++) {
             // Add a small delay between attempts (except first attempt)
@@ -595,70 +607,71 @@ bool SensorManager::updateWithDiagnostics() {
             }
             
             // Try to read magnetometer data
-            int8_t rslt = bmm150_read_mag_data(&magData, &mag);
+            mag.read_mag_data();
             
-            if (rslt == BMM150_OK) {
-                // Check if values are valid (not all zeros)
-                if (magData.x != 0 || magData.y != 0 || magData.z != 0) {
-                    magSuccess = true;
-                    
-                    if (attempt > 0) {
-                        Serial.print("<DEBUG:MAG_RECOVERED:ATTEMPT=");
-                        Serial.print(attempt + 1);
-                        Serial.println(">");
-                    }
-                      // Log successful mag reading values only periodically
-                    static unsigned long lastMagDebugTime = 0;
-                    if (millis() - lastMagDebugTime > 5000) { // Every 5 seconds
-                        Serial.print("<DEBUG:MAG_VALUES:X=");
-                        Serial.print(magData.x);
-                        Serial.print(",Y=");
-                        Serial.print(magData.y);
-                        Serial.print(",Z=");
-                        Serial.print(magData.z);
-                        Serial.println(">");
-                        lastMagDebugTime = millis();
-                    }
-                } else {
-                    // All zeros despite successful reading - could be sensor issue
-                    Serial.println("<DEBUG:MAG_ALL_ZEROS_DESPITE_OK>");
-                    
-                    // Try a soft reset and initialize again
-                    if (attempt == 1) {
-                        Serial.println("<DEBUG:ATTEMPTING_MAG_RESET>");
-                        
-                        // Re-initialize BMM150 magnetometer
-                        mag.intf_ptr = &magUserData;
-                        mag.read = bmm150_i2c_read;
-                        mag.write = bmm150_i2c_write;
-                        mag.delay_us = bmm150_delay_us;
-                        mag.intf = BMM150_I2C_INTF;
-                        
-                        // Initialize and configure
-                        bmm150_init(&mag);
-                        struct bmm150_settings settings;
-                        settings.preset_mode = BMM150_PRESETMODE_HIGHACCURACY;
-                        bmm150_set_presetmode(&settings, &mag);
-                    }
+            // Check if values are valid (not all zeros)
+            if (mag.mag_data.x != 0 || mag.mag_data.y != 0 || mag.mag_data.z != 0) {
+                // Store valid data in our array
+                magData[0] = mag.mag_data.x;
+                magData[1] = mag.mag_data.y;
+                magData[2] = mag.mag_data.z;
+                magSuccess = true;
+                
+                if (attempt > 0) {
+                    Serial.print("<DEBUG:MAG_RECOVERED:ATTEMPT=");
+                    Serial.print(attempt + 1);
+                    Serial.println(">");
+                }
+                  
+                // Log successful mag reading values only periodically
+                static unsigned long lastMagDebugTime = 0;
+                if (millis() - lastMagDebugTime > 5000) { // Every 5 seconds
+                    Serial.print("<DEBUG:MAG_VALUES:X=");
+                    Serial.print(mag.mag_data.x);
+                    Serial.print(",Y=");
+                    Serial.print(mag.mag_data.y);
+                    Serial.print(",Z=");
+                    Serial.print(mag.mag_data.z);
+                    Serial.println(">");
+                    lastMagDebugTime = millis();
                 }
             } else {
-                // If first read failed, log and try again
-                if (attempt == 0) {
-                    Serial.print("<DEBUG:MAG_READ_FAILED:CODE=");
-                    Serial.print(rslt);
-                    Serial.println(">");
+                // All zeros despite reading - could be sensor issue
+                Serial.println("<DEBUG:MAG_ALL_ZEROS_DESPITE_READ>");
+                
+                // Try a soft reset and initialize again
+                if (attempt == 1) {
+                    Serial.println("<DEBUG:ATTEMPTING_MAG_RESET>");
+                    
+                    // Re-initialize BMM150 magnetometer using Seeed library
+                    if (mag.initialize() == BMM150_OK) {
+                        mag.set_op_mode(BMM150_NORMAL_MODE);
+                        mag.set_presetmode(BMM150_PRESETMODE_HIGHACCURACY);
+                        Serial.println("<DEBUG:MAG_RESET_SUCCESSFUL>");
+                    } else {
+                        Serial.println("<DEBUG:MAG_RESET_FAILED>");
+                    }
                 }
             }
         }
-        
+          
         if (!magSuccess) {
             Serial.println("<DEBUG:MAG_READ_FAILED_AFTER_RETRIES>");
             success = false;
             
-            // Generate placeholder values to maintain functioning system
-            magData.x = 10; // Non-zero placeholder values
-            magData.y = 5;
-            magData.z = 50;
+            // Use last valid values if available
+            if (SensorManager_hasValidReadingEver) {
+                magData[0] = SensorManager_lastValidX;
+                magData[1] = SensorManager_lastValidY;
+                magData[2] = SensorManager_lastValidZ;
+                Serial.println("<DEBUG:DIAGNOSTICS_USING_LAST_VALID_MAG_VALUES>");
+            } else {
+                // No valid values ever recorded, use neutral values
+                magData[0] = 0;
+                magData[1] = 0;
+                magData[2] = 1; // Small non-zero value to avoid division by zero
+                Serial.println("<DEBUG:DIAGNOSTICS_USING_NEUTRAL_MAG_VALUES>");
+            }
         }
         
         // Read barometer data
@@ -684,254 +697,85 @@ bool SensorManager::updateWithDiagnostics() {
 }
 
 void SensorManager::processGPS() {
-    // Extended buffer and read timeouts for GPS
-    static const unsigned long MAX_WAIT_MS = 100; // Allow 100ms to read GPS data (increased from 50ms)
-    static const int GPS_BUFFER_SIZE = 1024; // Even larger buffer for NMEA sentences (doubled)
-    static char gpsBuffer[GPS_BUFFER_SIZE];
-    static int bufferPos = 0;
-    
-    unsigned long startTime = millis();
-    int bytesProcessed = 0;
-    bool sentenceStarted = false;
-    char nmeaBuffer[150] = {0}; // Larger buffer for NMEA sentences
-    int nmeaIndex = 0;
-    
-    // Satellite data tracking
-    static unsigned long lastSatelliteDataTime = 0;
-    static bool receivedSatelliteData = false;
-    
-    // Process all available GPS data with a reasonable timeout
-    // This ensures we don't block for too long if data is streaming continuously
-    while ((Serial1.available() > 0) && (millis() - startTime < MAX_WAIT_MS)) {
-        char c = Serial1.read();
-        bytesProcessed++;
-        
-        // Store in larger buffer for bulk processing
-        if (bufferPos < GPS_BUFFER_SIZE - 1) {
-            gpsBuffer[bufferPos++] = c;
-        }
-          // Debug full NMEA sentences
-        if (c == '$') {
-            sentenceStarted = true;
-            nmeaBuffer[0] = c;
-            nmeaIndex = 1;
-        } else if (sentenceStarted) {
-            if (nmeaIndex < sizeof(nmeaBuffer) - 1) {
-                nmeaBuffer[nmeaIndex++] = c;
-            }
-            
-            // End of NMEA sentence
-            if (c == '\n' || c == '\r') {
-                nmeaBuffer[nmeaIndex] = '\0';
-                sentenceStarted = false;
-                
-                // Track that we received satellite data if these are satellite-related sentences
-                if (strncmp(nmeaBuffer, "$GPGSV", 6) == 0 || 
-                    strncmp(nmeaBuffer, "$GLGSV", 6) == 0 ||
-                    strncmp(nmeaBuffer, "$GAGSV", 6) == 0) {
-                    
-                    receivedSatelliteData = true;
-                    lastSatelliteDataTime = millis();
-                    
-                    #if DEBUG_SENSORS
-                    Serial.print("<DEBUG:GPS_SAT_DATA_RECEIVED>");
-                    #endif
-                }
-                
-                #if DEBUG_SENSORS
-                // Print complete NMEA sentences occasionally for debugging
-                static unsigned long lastNmeaDebugTime = 0;
-                if (millis() - lastNmeaDebugTime > 5000) { // Every 5 seconds
-                    Serial.print("<DEBUG:GPS_NMEA:");
-                    Serial.print(nmeaBuffer);
-                    Serial.println(">");
-                    lastNmeaDebugTime = millis();
-                }
-                #endif
-            }
-        }
-          // Feed data to TinyGPS++ and track what was processed
-        bool sentenceProcessed = gps.encode(c);
-        
-        if (sentenceProcessed) {
-            // Track last successful processing
-            static unsigned long lastSuccessfulProcess = 0;
-            lastSuccessfulProcess = millis();
-            
-            #if DEBUG_SENSORS
-            static unsigned long lastSentenceProcessedTime = 0;
-            if (millis() - lastSentenceProcessedTime > 10000) { // Every 10 seconds
-                Serial.print("<DEBUG:GPS_SENTENCE_PROCESSED_SUCCESSFULLY:SAT_VALID=");
-                Serial.print(gps.satellites.isValid() ? "YES" : "NO");
-                Serial.print(",SAT_COUNT=");
-                Serial.print(gps.satellites.isValid() ? gps.satellites.value() : 0);
-                Serial.println(">");
-                lastSentenceProcessedTime = millis();
-            }
-            #endif
-        }
-    }
-    
-    // Process any complete sentences in the buffer
-    if (bufferPos > 0) {
-        gpsBuffer[bufferPos] = '\0'; // Null-terminate
-        
-        #if DEBUG_SENSORS
-        static unsigned long lastBufferDebugTime = 0;
-        if (millis() - lastBufferDebugTime > 10000) { // Every 10 seconds
-            Serial.print("<DEBUG:GPS_BUFFER_SIZE:");
-            Serial.print(bufferPos);
-            Serial.println(">");
-            lastBufferDebugTime = millis();
-        }
-        #endif
-        
-        // Reset buffer position for next time
-        bufferPos = 0;
-    }
-    
-    // If we processed data, log it periodically
-    if (bytesProcessed > 0) {
-        #if DEBUG_SENSORS
-        static unsigned long lastSentenceDebugTime = 0;
-        if (millis() - lastSentenceDebugTime > 5000) { // Every 5 seconds
-            Serial.print("<DEBUG:GPS_BYTES_PROCESSED:");
-            Serial.print(bytesProcessed);
-            Serial.println(">");
-            lastSentenceDebugTime = millis();
-        }
-        #endif
-    }
-      // Check if GPS has valid data and handle potential GPS module issues
+    // Simply process all available GPS data directly with TinyGPSPlus
+    unsigned int bytesProcessed = 0;
     static unsigned long lastGpsResetTime = 0;
-    static unsigned long noDataTime = 0;
-    static unsigned long lastSatelliteCheck = 0;
-    static const unsigned long SAT_CHECK_INTERVAL = 10000; // Check satellite count every 10 seconds
+    const unsigned long GPS_RESET_INTERVAL = 120000; // Reset GPS UART every 2 minutes if no fix
     
-    // Check if we need to poll for satellites explicitly
-    if (millis() - lastSatelliteCheck > SAT_CHECK_INTERVAL) {
-        lastSatelliteCheck = millis();
+    // Check if GPS needs a reset (if we haven't received a fix in a while)
+    if (millis() - lastGpsResetTime > GPS_RESET_INTERVAL && 
+        gps.charsProcessed() > 5000 && gps.sentencesWithFix() == 0) {
         
-        // If we haven't seen satellites for a while, we might need to request specific NMEA sentences
-        if (!gps.satellites.isValid() || gps.satellites.value() == 0) {
-            #if DEBUG_SENSORS
-            Serial.println("<DEBUG:GPS_POLL_SATELLITES>");
-            #endif
-            
-            // For some GPS modules, requesting specific NMEA sentences can help
-            // $PMTK314 is a MediaTek command to configure NMEA output
-            // This enables GGA, GSA, GSV, and RMC sentences
-            Serial1.println("$PMTK314,0,1,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0*29");
+        // Reset the GPS UART connection
+        #if DEBUG_SENSORS
+        Serial.println("<DEBUG:GPS_RESET_UART:NO_FIX_TIMEOUT>");
+        #endif
+        
+        // Save current Serial1 configuration
+        int currentBaud = 9600;  // We know we're using 9600 baud
+        
+        // Close and reopen the Serial1 port
+        Serial1.end();
+        delay(100);
+        Serial1.begin(currentBaud);
+        Serial1.setRx(PB7);
+        Serial1.setTx(PB6);
+        
+        // Clear both input buffer and TinyGPSPlus object
+        while (Serial1.available()) {
+            Serial1.read();
+        }
+        
+        // Send UBLOX config commands to ensure GPS is in proper mode
+        // UBX-CFG-PMS - Set power mode to normal operation
+        uint8_t powerMode[] = {0xB5, 0x62, 0x06, 0x86, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x95, 0x61};
+        Serial1.write(powerMode, sizeof(powerMode));
+        
+        // UBX-CFG-GNSS - Enable GPS+GLONASS for better coverage
+        uint8_t enableSystems[] = {0xB5, 0x62, 0x06, 0x3E, 0x3C, 0x00, 0x00, 0x00, 0x20, 0x07, 0x00, 0x08, 0x10, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 0x04, 0x08, 0x00, 0x00, 0x00, 0x01, 0x01, 0x03, 0x08, 0x10, 0x00, 0x00, 0x00, 0x01, 0x01, 0x04, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x01, 0x05, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x01, 0x06, 0x08, 0x0E, 0x00, 0x00, 0x00, 0x01, 0x01, 0x2C, 0x4B};
+        Serial1.write(enableSystems, sizeof(enableSystems));
+        
+        // Update the last reset time
+        lastGpsResetTime = millis();
+    }
+    
+    // Process available data
+    while (Serial1.available() > 0) {
+        char c = Serial1.read();
+        if (gps.encode(c)) {
+            bytesProcessed++;
         }
     }
     
-    if (bytesProcessed == 0) {
-        // No data received during this call
-        if (noDataTime == 0) {
-            noDataTime = millis();
-        } else if ((millis() - noDataTime) > 5000 && (millis() - lastGpsResetTime) > 30000) {
-            // More aggressive reset: No data for 5 seconds (down from 10s), and no reset in the last 30s (down from 60s)
-            #if DEBUG_SENSORS
-            Serial.println("<DEBUG:GPS_NO_DATA_RESET_ATTEMPT>");
-            #endif
-            
-            // Reset the GPS UART
-            Serial1.end();
-            delay(100);
-            Serial1.begin(9600, SERIAL_8N1);
-            Serial1.setRx(PB7);
-            Serial1.setTx(PB6);
-            
-            // Request satellite data explicitly
-            Serial1.println("$PMTK314,0,1,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0*29");
-            
-            lastGpsResetTime = millis();
-        }
-    } else {
-        // Data was received, reset the no-data timer
-        noDataTime = 0;
-    }
-    
-    // Special case: If we have GPS data but no satellites after a long time
-    static unsigned long noSatelliteTime = 0;
-    if (bytesProcessed > 0 && (!gps.satellites.isValid() || gps.satellites.value() == 0)) {
-        if (noSatelliteTime == 0) {
-            noSatelliteTime = millis();
-        } else if ((millis() - noSatelliteTime) > 30000 && (millis() - lastGpsResetTime) > 60000) {
-            // No satellites for 30 seconds despite receiving data
-            #if DEBUG_SENSORS
-            Serial.println("<DEBUG:GPS_NO_SATELLITES_RESET_ATTEMPT>");
-            #endif
-            
-            // Full reset sequence
-            Serial1.end();
-            delay(200);
-            Serial1.begin(9600, SERIAL_8N1);
-            Serial1.setRx(PB7);
-            Serial1.setTx(PB6);
-            
-            // Request specific NMEA sentences with emphasis on GSV (satellite data)
-            // $PMTK314,0,1,0,1,1,5,0,0,0,0,0,0,0,0,0,0,0,0,0*2C (GSV at 5Hz)
-            Serial1.println("$PMTK314,0,1,0,1,1,5,0,0,0,0,0,0,0,0,0,0,0,0,0*2C");
-            
-            lastGpsResetTime = millis();
-            noSatelliteTime = millis(); // Reset timer
-        }
-    } else {
-        // We have valid satellite data
-        noSatelliteTime = 0;
-    }
-      #if DEBUG_SENSORS
-    // Enhanced GPS status diagnostics at regular intervals
+    // Periodically log GPS statistics to help diagnose issues
+    #if DEBUG_SENSORS
     static unsigned long lastGpsStatusTime = 0;
     if (millis() - lastGpsStatusTime > 5000) { // Every 5 seconds
-        char buffer[200]; // Larger buffer for more information
+        // Create a comprehensive GPS status report
+        Serial.print("<DEBUG:GPS_STATUS:CHARS_PROCESSED=");
+        Serial.print(gps.charsProcessed());
+        Serial.print(",SENTENCES_WITH_FIX=");
+        Serial.print(gps.sentencesWithFix());
+        Serial.print(",FAILED_CHECKSUMS=");
+        Serial.print(gps.failedChecksum());
+        Serial.print(",SATELLITES=");
+        Serial.print(gps.satellites.isValid() ? gps.satellites.value() : 0);
+        Serial.print(",VALID_LOCATION=");
+        Serial.print(gps.location.isValid() ? "YES" : "NO");
         
-        // Basic GPS status
-        snprintf(buffer, sizeof(buffer),
-                "<DEBUG:GPS_STATUS:SATELLITES=%d,FIX=%s,CHARS=%lu,SENTENCES=%lu,CSUM_ERR=%lu,BYTES_THIS_CYCLE=%d>",
-                gps.satellites.isValid() ? gps.satellites.value() : 0,
-                gps.location.isValid() ? "YES" : "NO",
-                gps.charsProcessed(),
-                gps.sentencesWithFix(),
-                gps.failedChecksum(),
-                bytesProcessed);
-        Serial.println(buffer);
-        
-        // If satellite data is valid, log more details
-        if (gps.satellites.isValid()) {
-            snprintf(buffer, sizeof(buffer),
-                    "<DEBUG:GPS_SATELLITES:COUNT=%d,IS_VALID=%s,AGE=%lu>",
-                    gps.satellites.value(),
-                    gps.satellites.isValid() ? "YES" : "NO",
-                    gps.satellites.age());
-            Serial.println(buffer);
-        }
-        
-        // Location data if valid
+        // If we have a valid location, print it
         if (gps.location.isValid()) {
-            snprintf(buffer, sizeof(buffer),
-                    "<DEBUG:GPS_LOCATION:LAT=%f,LON=%f,ALT=%f,HDOP=%f,COURSE=%f,SPEED=%f>",
-                    gps.location.lat(),
-                    gps.location.lng(),
-                    gps.altitude.isValid() ? gps.altitude.meters() : 0.0f,
-                    gps.hdop.isValid() ? gps.hdop.hdop() : 0.0f,
-                    gps.course.isValid() ? gps.course.deg() : 0.0f,
-                    gps.speed.isValid() ? gps.speed.kmph() : 0.0f);
-            Serial.println(buffer);
+            Serial.print(",LAT=");
+            Serial.print(gps.location.lat(), 6);
+            Serial.print(",LON=");
+            Serial.print(gps.location.lng(), 6);
         }
         
-        // Time data
-        if (gps.time.isValid() && gps.date.isValid()) {
-            snprintf(buffer, sizeof(buffer),
-                    "<DEBUG:GPS_TIME:DATE=%02d/%02d/%04d,TIME=%02d:%02d:%02d>",
-                    gps.date.day(),
-                    gps.date.month(),
-                    gps.date.year(),
-                    gps.time.hour(),
-                    gps.time.minute(),
-                    gps.time.second());
-            Serial.println(buffer);
+        Serial.println(">");
+        
+        // Add advice if no fix after significant data processed
+        if (gps.charsProcessed() > 5000 && gps.sentencesWithFix() == 0) {
+            Serial.println("<DEBUG:GPS_NO_FIX_ADVICE:ENSURE_ANTENNA_HAS_CLEAR_SKY_VIEW>");
         }
         
         lastGpsStatusTime = millis();
@@ -954,408 +798,227 @@ void SensorManager::readAccelGyro() {
 }
 
 void SensorManager::readMagnetometer() {
-    static unsigned long lastMagResetTime = 0;
-    static unsigned long lastFullResetTime = 0;
-    static unsigned long consecutiveFailures = 0;
-    static int resetCount = 0;
-    unsigned long currentTime = millis();
+    // Attempt to read magnetometer data with the Seeed Studio BMM150 library
+    static int8_t consecutiveFailCount = 0;
+    static unsigned long lastResetAttempt = 0;
+    static unsigned long lastSoftResetTime = 0;
+    static unsigned long lastHardResetTime = 0;
+    static bool needsFullReset = false;
+    static uint16_t totalReadAttempts = 0;
+    static uint16_t totalReadFailures = 0;
     
-    // More frequent resets if there are consecutive failures
-    bool needsReset = (currentTime - lastMagResetTime > 20000) || // Every 20 seconds normally (reduced from 30s)
-                      (consecutiveFailures > 2 && currentTime - lastMagResetTime > 3000); // More aggressive reset schedule
+    // Increment read attempt counter
+    totalReadAttempts++;
     
-    if (needsReset) {
-        resetCount++;
-        
-        // First reset the I2C bus itself to clear any stuck conditions
-        Wire.endTransmission(true);
-        delay(10);
-        
-        // Soft reset the magnetometer
-        uint8_t soft_reset_cmd = 0x82; // Soft reset value
-        mag.write(0x4B, &soft_reset_cmd, 1, &mag); // 0x4B is power control register
-        delay(50);
-        
-        // Check chip ID after reset
-        uint8_t chip_id = 0;
-        int readResult = mag.read(BMM150_REG_CHIP_ID, &chip_id, 1, &mag);
-        
+    // Check if we need a deep reset (hardware level)
+    if (needsFullReset && millis() - lastHardResetTime > 60000) { // Every minute if needed
         #if DEBUG_SENSORS
-        Serial.print("<DEBUG:MAG_PERIODIC_RESET:CHIP_ID=");
-        Serial.print(chip_id);
-        Serial.print(",READ_RESULT=");
-        Serial.print(readResult);
-        Serial.print(",RESET_COUNT=");
-        Serial.print(resetCount);
-        Serial.println(">");
+        Serial.println("<DEBUG:BMM150_ATTEMPTING_HARD_RESET>");
         #endif
         
-        // Re-configure settings after reset
-        struct bmm150_settings settings;
+        // Completely reset I2C bus
+        Wire.end();
+        delay(200);
         
-        // Try setting the normal mode first
-        settings.pwr_mode = BMM150_POWERMODE_NORMAL;
-        int8_t mode_result = bmm150_set_op_mode(&settings, &mag);
-        delay(20); // More delay time for stable mode transitions
-        
-        // Then set the preset mode
-        settings.preset_mode = BMM150_PRESETMODE_HIGHACCURACY;
-        int8_t preset_result = bmm150_set_presetmode(&settings, &mag);
-        
-        #if DEBUG_SENSORS
-        if (mode_result != BMM150_OK || preset_result != BMM150_OK) {
-            Serial.print("<DEBUG:MAG_CONFIG_ERROR:MODE=");
-            Serial.print(mode_result);
-            Serial.print(",PRESET=");
-            Serial.print(preset_result);
-            Serial.println(">");
-        }
-        #endif
-        
-        lastMagResetTime = currentTime;
-    }
-      // Do a full reinit every 60 seconds - even more frequent resets to prevent extended periods of bad data
-    if (currentTime - lastFullResetTime > 60000) { // 1 minute (reduced from 2 minutes)
-        #if DEBUG_SENSORS
-        Serial.println("<DEBUG:MAG_FULL_REINIT>");
-        #endif
-        
-        // Hard reset I2C bus first by cycling SCL multiple times
-        Wire.endTransmission(true);
-        // Give more time for bus to stabilize
+        // Reinitialize I2C
+        Wire.begin();
+        Wire.setClock(100000); // 100 kHz for better stability
         delay(100);
         
-        // Full reinitialization with explicit error handling
-        int8_t init_result = bmm150_init(&mag);
-        
-        // Configure magnetometer with full settings just like in begin()
-        struct bmm150_settings settings;
-        
-        #if DEBUG_SENSORS
-        Serial.print("<DEBUG:MAG_FULL_REINIT_INIT_RESULT=");
-        Serial.print(init_result);
-        Serial.println(">");
-        #endif
-        
-        // First perform a soft reset
-        uint8_t soft_reset_cmd = 0x82;
-        mag.write(0x4B, &soft_reset_cmd, 1, &mag);
-        delay(100);
-        
-        // Verify chip ID to ensure communication is working
-        uint8_t chip_id = 0;
-        int8_t id_result = mag.read(BMM150_REG_CHIP_ID, &chip_id, 1, &mag);
-        
-        #if DEBUG_SENSORS
-        Serial.print("<DEBUG:MAG_FULL_REINIT_CHIP_ID=");
-        Serial.print(chip_id);
-        Serial.print(",READ_RESULT=");
-        Serial.print(id_result);
-        Serial.println(">");
-        #endif
-        
-        // Now set required settings - power mode first, then preset mode
-        settings.pwr_mode = BMM150_POWERMODE_NORMAL;
-        int8_t power_result = bmm150_set_op_mode(&settings, &mag);
-        delay(50);
-        
-        settings.preset_mode = BMM150_PRESETMODE_HIGHACCURACY;
-        int8_t preset_result = bmm150_set_presetmode(&settings, &mag);
-        
-        #if DEBUG_SENSORS
-        Serial.print("<DEBUG:MAG_FULL_REINIT_CONFIG:POWER=");
-        Serial.print(power_result);
-        Serial.print(",PRESET=");
-        Serial.print(preset_result);
-        Serial.println(">");
-        #endif
-        
-        lastFullResetTime = currentTime;
-        
-        // Verify initialization worked by reading data
-        struct bmm150_mag_data test_data;
-        int8_t read_result = bmm150_read_mag_data(&test_data, &mag);
-        
-        #if DEBUG_SENSORS
-        Serial.print("<DEBUG:MAG_FULL_REINIT_TEST_READ:RESULT=");
-        Serial.print(read_result);
-        Serial.print(",X=");
-        Serial.print(test_data.x);
-        Serial.print(",Y=");
-        Serial.print(test_data.y);
-        Serial.print(",Z=");
-        Serial.print(test_data.z);
-        Serial.println(">");
-        #endif
-    }    // Read raw registers directly to diagnose possible issues
-    uint8_t raw_regs[16] = {0};  // Expanded register read buffer
-    
-    // Read multiple register blocks to check the sensor status
-    uint8_t reg_status = 0;
-    mag.read(BMM150_REG_DATA_READY_STATUS, &reg_status, 1, &mag);
-    
-    // Read magnetometer data registers directly
-    int8_t reg_read_result = mag.read(BMM150_REG_DATA_X_LSB, raw_regs, 8, &mag);
-    
-    // Also read power control and chip ID registers
-    uint8_t power_reg = 0;
-    mag.read(0x4B, &power_reg, 1, &mag);  // Power control register
-    
-    uint8_t chip_id = 0;
-    mag.read(BMM150_REG_CHIP_ID, &chip_id, 1, &mag);
-    
-    #if DEBUG_SENSORS
-    static unsigned long lastRegDebugTime = 0;
-    if (millis() - lastRegDebugTime > 5000) { // Every 5 seconds (more frequent debugging)
-        Serial.print("<DEBUG:MAG_RAW_REGS_READ_RESULT=");
-        Serial.print(reg_read_result);
-        Serial.print(",DATA_READY=0x");
-        Serial.print(reg_status, HEX);
-        Serial.print(",POWER_REG=0x");
-        Serial.print(power_reg, HEX);
-        Serial.print(",CHIP_ID=0x");
-        Serial.print(chip_id, HEX);
-        Serial.print(",DATA_REGS:");
-        for (int i = 0; i < 8; i++) {
-            Serial.print("0x");
-            Serial.print(raw_regs[i], HEX);
-            Serial.print(",");
-        }
-        Serial.println(">");
-        lastRegDebugTime = millis();
-    }
-    #endif
-
-    // Read magnetometer data in µT
-    int8_t status = bmm150_read_mag_data(&magData, &mag);
-    
-    // Try up to 7 times if the read fails (increased from 5)
-    int attempts = 1;
-    while (status != BMM150_OK && attempts < 7) {
-        delay(15 * attempts); // Progressive backoff with longer delays
-        
-        // Reset I2C bus on continued failures
-        if (attempts > 1) {
-            // More aggressive bus reset for persistent failures
-            Wire.endTransmission(true);
-            delay(20 * attempts); // Longer delay based on attempt count
-            
-            // Try to wake up the sensor with a write to control register
-            if (attempts > 3) {
-                uint8_t wake_cmd = 0x01; // Normal power mode
-                mag.write(0x4B, &wake_cmd, 1, &mag);
-                delay(20);
-            }
-        }
-        
-        status = bmm150_read_mag_data(&magData, &mag);
-        attempts++;
-    }
-      // Track consecutive failures for more aggressive reset
-    if (status != BMM150_OK) {
-        consecutiveFailures++;
-        
-        #if DEBUG_SENSORS
-        Serial.print("<DEBUG:BMM150_READ_FAILED_ATTEMPTS:");
-        Serial.print(attempts);
-        Serial.print(",CONSECUTIVE_FAILURES:");
-        Serial.print(consecutiveFailures);
-        Serial.println(">");
-        #endif
-        
-        // If the failures persist, try a more advanced recovery sequence
-        if (consecutiveFailures > 3) {
+        // Reinitialize magnetometer from scratch
+        if (mag.initialize() != BMM150_OK) {
             #if DEBUG_SENSORS
-            Serial.println("<DEBUG:BMM150_ADVANCED_RECOVERY_SEQUENCE>");
+            Serial.println("<DEBUG:BMM150_HARD_RESET_FAILED>");
+            #endif
+        } else {
+            // Set to high accuracy mode
+            mag.set_op_mode(BMM150_NORMAL_MODE);
+            mag.set_presetmode(BMM150_PRESETMODE_HIGHACCURACY);
+            #if DEBUG_SENSORS
+            Serial.println("<DEBUG:BMM150_HARD_RESET_SUCCESSFUL>");
+            #endif
+        }
+        
+        // Set flags back
+        lastHardResetTime = millis();
+        needsFullReset = false;
+        consecutiveFailCount = 0;
+    }
+    
+    // Try soft reset if we have consecutive failures but not yet at hard reset threshold
+    if (consecutiveFailCount >= 5 && millis() - lastSoftResetTime > 10000) {
+        #if DEBUG_SENSORS
+        Serial.println("<DEBUG:BMM150_ATTEMPTING_SOFT_RESET>");
+        #endif
+        
+        // Issue a soft reset by re-initializing the device
+        if (mag.initialize() != BMM150_OK) {
+            #if DEBUG_SENSORS
+            Serial.println("<DEBUG:BMM150_SOFT_RESET_FAILED>");
+            #endif
+        } else {
+            // Set to high accuracy mode
+            mag.set_op_mode(BMM150_NORMAL_MODE);
+            mag.set_presetmode(BMM150_PRESETMODE_HIGHACCURACY);
+            #if DEBUG_SENSORS
+            Serial.println("<DEBUG:BMM150_SOFT_RESET_SUCCESSFUL>");
+            #endif
+        }
+        
+        lastSoftResetTime = millis();
+    }
+    
+    // Read magnetometer data
+    bool readSuccess = true;
+    
+    // Attempt to read the magnetometer
+    mag.read_mag_data(); // This updates mag.mag_data internally
+    
+    // Check for potential error conditions
+    bool magDataInvalid = false;
+
+    // Check if the values are reasonable
+    const int16_t MAG_MAX_REASONABLE = 1000;
+    if (mag.mag_data.x == 0 && mag.mag_data.y == 0 && mag.mag_data.z == 0) {
+        magDataInvalid = true;
+        readSuccess = false;
+        #if DEBUG_SENSORS
+        static unsigned long lastZerosTime = 0;
+        if (millis() - lastZerosTime > 5000) {
+            Serial.println("<DEBUG:BMM150_ALL_ZEROS_DETECTED>");
+            lastZerosTime = millis();
+        }
+        #endif
+    } else if (mag.mag_data.z == -32768) { // Check for the common stuck Z issue
+        magDataInvalid = true;
+        readSuccess = false;
+        #if DEBUG_SENSORS
+        static unsigned long lastStuckTime = 0;
+        if (millis() - lastStuckTime > 5000) {
+            Serial.println("<DEBUG:BMM150_Z_STUCK_AT_-32768>");
+            lastStuckTime = millis();
+        }
+        #endif
+    } else if (abs(mag.mag_data.x) > MAG_MAX_REASONABLE || 
+              abs(mag.mag_data.y) > MAG_MAX_REASONABLE || 
+              abs(mag.mag_data.z) > MAG_MAX_REASONABLE) {
+        // Check for unreasonably large values
+        magDataInvalid = true;
+        readSuccess = false;
+        #if DEBUG_SENSORS
+        static unsigned long lastUnreasonableTime = 0;
+        if (millis() - lastUnreasonableTime > 5000) {
+            Serial.println("<DEBUG:BMM150_UNREASONABLE_VALUES_DETECTED>");
+            lastUnreasonableTime = millis();
+        }
+        #endif
+    }
+
+    if (!readSuccess) {
+        consecutiveFailCount++;
+        totalReadFailures++;
+        
+        #if DEBUG_SENSORS
+        // Log failures less frequently to avoid console spam
+        static unsigned long lastFailTime = 0;
+        if (millis() - lastFailTime > 5000) {
+            Serial.print("<DEBUG:BMM150_READ_FAILED:CONSECUTIVE_FAILS=");
+            Serial.print(consecutiveFailCount);
+            Serial.print(",TOTAL_FAILURES=");
+            Serial.print(totalReadFailures);
+            Serial.print(",SUCCESS_RATE=");
+            float successRate = 100.0f * (totalReadAttempts - totalReadFailures) / totalReadAttempts;
+            Serial.print(successRate, 1);
+            Serial.println("%>");
+            lastFailTime = millis();
+        }
+        #endif
+
+        // If we've had too many consecutive failures, attempt a hard reset
+        if (consecutiveFailCount >= 20) {
+            needsFullReset = true;
+        }
+        
+        // If we've had multiple consecutive failures, attempt an immediate reset
+        if (consecutiveFailCount >= 10 && (millis() - lastResetAttempt > 5000)) {
+            #if DEBUG_SENSORS
+            Serial.println("<DEBUG:BMM150_ATTEMPTING_RESET>");
             #endif
             
-            // Hard I2C reset with extended delay
+            // Reset I2C bus
             Wire.endTransmission(true);
             delay(100);
             
-            // First try a soft reset
-            uint8_t soft_reset_cmd = 0x82;
-            mag.write(0x4B, &soft_reset_cmd, 1, &mag);
-            delay(100);  // More time to complete reset
+            // Re-initialize and configure the sensor
+            if (mag.initialize() == BMM150_OK) {
+                mag.set_op_mode(BMM150_NORMAL_MODE);
+                mag.set_presetmode(BMM150_PRESETMODE_HIGHACCURACY);
+                #if DEBUG_SENSORS
+                Serial.println("<DEBUG:BMM150_IMMEDIATE_RESET_SUCCESSFUL>");
+                #endif
+            }
             
-            // Check if chip ID is still readable
-            uint8_t chip_id = 0;
-            int8_t id_result = mag.read(BMM150_REG_CHIP_ID, &chip_id, 1, &mag);
-            
-            #if DEBUG_SENSORS
-            Serial.print("<DEBUG:BMM150_RECOVERY_CHIP_ID=");
-            Serial.print(chip_id);
-            Serial.print(",READ_RESULT=");
-            Serial.print(id_result);
-            Serial.println(">");
-            #endif
-            
-            // Full sequence: reinitialize, power mode, preset mode
-            bmm150_init(&mag);
-            delay(50);
-            
-            struct bmm150_settings settings;
-            settings.pwr_mode = BMM150_POWERMODE_NORMAL;
-            int8_t mode_result = bmm150_set_op_mode(&settings, &mag);
-            delay(50);
-            
-            settings.preset_mode = BMM150_PRESETMODE_HIGHACCURACY;
-            int8_t preset_result = bmm150_set_presetmode(&settings, &mag);
-            
-            #if DEBUG_SENSORS
-            Serial.print("<DEBUG:BMM150_RECOVERY_CONFIG:MODE=");
-            Serial.print(mode_result);
-            Serial.print(",PRESET=");
-            Serial.print(preset_result);
-            Serial.println(">");
-            #endif
-            
-            // Try reading after full recovery process
-            status = bmm150_read_mag_data(&magData, &mag);
-            
-            #if DEBUG_SENSORS
-            Serial.print("<DEBUG:BMM150_RECOVERY_READ:STATUS=");
-            Serial.print(status);
-            Serial.print(",X=");
-            Serial.print(magData.x);
-            Serial.print(",Y=");
-            Serial.print(magData.y);
-            Serial.print(",Z=");
-            Serial.print(magData.z);
-            Serial.println(">");
-            #endif
-        } else {
-            // Standard reset for fewer failures
-            uint8_t soft_reset_cmd = 0x82;
-            mag.write(0x4B, &soft_reset_cmd, 1, &mag);
-            delay(50);
-            
-            struct bmm150_settings settings;
-            settings.preset_mode = BMM150_PRESETMODE_HIGHACCURACY;
-            settings.pwr_mode = BMM150_POWERMODE_NORMAL;
-            bmm150_set_op_mode(&settings, &mag);
-            delay(20);
-            bmm150_set_presetmode(&settings, &mag);
-            
-            // Try one more read after reset
-            status = bmm150_read_mag_data(&magData, &mag);
+            lastResetAttempt = millis();
         }
-    } else {
-        if (consecutiveFailures > 0) {
-            #if DEBUG_SENSORS
-            Serial.println("<DEBUG:BMM150_RECOVERED_AFTER_FAILURES>");
-            #endif
-            consecutiveFailures = 0; // Reset counter on success
-        }
-    }
-      // Special handling for the BMM150 Z axis issue (-32768 value)
-    bool zValueStuck = (magData.z == -32768);
-    bool xOrYInvalid = (magData.x == 0 && magData.y == 0) || 
-                       (magData.x == -32768 || magData.y == -32768);
-    bool xOrYValid = !xOrYInvalid;
-    
-    // Check if we have any usable data at all
-    if (status == BMM150_OK && xOrYValid) {
-        // We have at least some valid data
-        
-        #if DEBUG_SENSORS
-        static unsigned long lastMagDebugTime = 0;
-        if (millis() - lastMagDebugTime > 5000) { // Only log every 5 seconds
-            Serial.print("<DEBUG:MAG_DATA_READ:");
-            Serial.print(magData.x);
-            Serial.print(",");
-            Serial.print(magData.y);
-            Serial.print(",");
-            Serial.print(magData.z);
-            Serial.print(",STATUS=");
-            Serial.print(status);
-            Serial.print(",Z_STUCK=");
-            Serial.print(zValueStuck ? "YES" : "NO");
-            Serial.println(">");
-            lastMagDebugTime = millis();
-        }
-        #endif
-        
-        // Fix the Z value if it's -32768 but X and Y are valid
-        if (zValueStuck) {
-            // More sophisticated approach to estimate Z value from X and Y
-            // Z component usually has a relationship with X and Y in Earth's magnetic field
-            
-            // Calculate a reasonable Z value based on typical Earth magnetic field relationships
-            // Values are typically in the range of +/- several hundred for BMM150
-            float magX = magData.x;
-            float magY = magData.y;
-            
-            // Basic approximation: Take magnitude of X,Y and use it to estimate Z
-            float xyMag = sqrt(magX*magX + magY*magY);
-            
-            // Get a reasonable Z value that changes gradually
-            static float lastZ = 300;
-            float newZ = (xyMag * 0.3f) + 300;  // Typical Z offset in Northern Hemisphere
-            
-            // Smooth transition to avoid sudden jumps
-            lastZ = (lastZ * 0.7f) + (newZ * 0.3f);
-            magData.z = (int16_t)lastZ;
+          
+        // Use last valid values if available, otherwise set to zero
+        if (SensorManager_hasValidReadingEver) {
+            magData[0] = SensorManager_lastValidX;
+            magData[1] = SensorManager_lastValidY;
+            magData[2] = SensorManager_lastValidZ;
             
             #if DEBUG_SENSORS
-            static unsigned long lastZFixTime = 0;
-            if (millis() - lastZFixTime > 5000) {
-                Serial.print("<DEBUG:MAG_Z_FIXED:OLD=-32768,NEW=");
-                Serial.print(magData.z);
-                Serial.print(",XY_MAG=");
-                Serial.print(xyMag);
-                Serial.println(">");
-                lastZFixTime = millis();
+            static unsigned long lastFallbackTime = 0;
+            if (millis() - lastFallbackTime > 10000) {
+                Serial.println("<DEBUG:BMM150_USING_LAST_VALID_VALUES>");
+                lastFallbackTime = millis();
             }
             #endif
+        } else {
+            // Mark data as invalid by setting to all zeros - this will trigger placeholder use
+            magData[0] = 0;
+            magData[1] = 0;
+            magData[2] = 0;
         }
-    } else {
-        #if DEBUG_SENSORS
-        static unsigned long lastMagErrorTime = 0;
-        if (millis() - lastMagErrorTime > 5000) { // Log errors every 5 seconds
-            Serial.print("<DEBUG:MAG_INVALID_VALUES:X=");
-            Serial.print(magData.x);
-            Serial.print(",Y=");
-            Serial.print(magData.y);
-            Serial.print(",Z=");
-            Serial.print(magData.z);
-            Serial.print(",STATUS=");
-            Serial.print(status);
-            Serial.println(">");
-            lastMagErrorTime = millis();
-        }
-        #endif
-          // Generate more sophisticated dynamic placeholder values
-        static float angle = 0.0f;
-        angle += 0.01f;  // Very small increment to simulate slow rotation
-        if (angle >= 6.28f) angle = 0; // Reset after full rotation (2π)
-        
-        // Create values that resemble a rotating magnetic field vector
-        // Earth's magnetic field is roughly 25-65 µT (0.25-0.65 Gauss) 
-        // BMM150 values are in 0.1µT units (16-bit signed)
-        float magnitude = 450.0f; // ~45µT, typical for Earth's magnetic field
-        
-        // Simulate Earth's field with tilt to match typical readings
-        magData.x = (int16_t)(magnitude * cos(angle));
-        magData.y = (int16_t)(magnitude * sin(angle) * 0.7f); 
-        magData.z = (int16_t)(magnitude * 0.8f); // Z typically doesn't vary as much
-        
-        #if DEBUG_SENSORS
-        static unsigned long lastPlaceholderTime = 0;
-        if (millis() - lastPlaceholderTime > 10000) { // Log every 10 seconds
-            Serial.print("<DEBUG:MAG_USING_DYNAMIC_PLACEHOLDER:X=");
-            Serial.print(magData.x);
-            Serial.print(",Y=");
-            Serial.print(magData.y);
-            Serial.print(",Z=");
-            Serial.print(magData.z);
-            Serial.print(",ANGLE=");
-            Serial.print(angle);
-            Serial.println(">");
-            lastPlaceholderTime = millis();
-        }
-        #endif
+        return;
     }
+    
+    // We got a valid reading, reset consecutive fail counter
+    consecutiveFailCount = 0;
+    
+    // Store the values in our local array
+    magData[0] = mag.mag_data.x;
+    magData[1] = mag.mag_data.y;
+    magData[2] = mag.mag_data.z;
+    
+    // Store valid readings and update "received good data ever" flag
+    SensorManager_lastValidX = mag.mag_data.x;
+    SensorManager_lastValidY = mag.mag_data.y;
+    SensorManager_lastValidZ = mag.mag_data.z;
+    SensorManager_hasValidReadingEver = true;
+    
+    // Log valid readings periodically
+    #if DEBUG_SENSORS
+    static unsigned long lastReadLogTime = 0;
+    if (millis() - lastReadLogTime > 10000) {
+        Serial.print("<DEBUG:BMM150_READING:X=");
+        Serial.print(mag.mag_data.x);
+        Serial.print(",Y=");
+        Serial.print(mag.mag_data.y);
+        Serial.print(",Z=");
+        Serial.print(mag.mag_data.z);
+        Serial.print(",SUCCESS_RATE=");
+        float successRate = 100.0f * (totalReadAttempts - totalReadFailures) / totalReadAttempts;
+        Serial.print(successRate, 1);
+        Serial.println("%>");
+        lastReadLogTime = millis();
+        
+        // Calibration reminder
+        if (mag.mag_data.x < 30 && mag.mag_data.y < 30) { // Low values may indicate poor calibration
+            Serial.println("<DEBUG:BMM150_CALIBRATION_REMINDER:MOVE_IN_FIGURE_8_PATTERN>");
+        }
+    }
+    #endif
 }
 
 void SensorManager::readBarometer() {
@@ -1413,114 +1076,226 @@ void SensorManager::processSensorData() {
     // Gyroscope in 0.01 dps (degrees per second) (rad/s * 180/π * 100)
     currentPacket.gyroX = static_cast<int16_t>(gyroData[0] * 57.2958f * 100.0f);
     currentPacket.gyroY = static_cast<int16_t>(gyroData[1] * 57.2958f * 100.0f);
-    currentPacket.gyroZ = static_cast<int16_t>(gyroData[2] * 57.2958f * 100.0f);    // Magnetometer in 0.1 µT (micro-Tesla * 10)
-    // Check for invalid readings or the special case of Z=-32768
-    bool allZeros = (magData.x == 0 && magData.y == 0 && magData.z == 0);
-    bool zStuckAt32768 = (magData.z == -32768);
-    
-    if (allZeros || zStuckAt32768) {
-        // Generate non-zero placeholder values (simulating Earth's magnetic field)
-        // These will be replaced with real values when the sensor works
-        currentPacket.magX = 10;  // 1.0 µT
-        currentPacket.magY = 5;   // 0.5 µT
-        currentPacket.magZ = 50;  // 5.0 µT
+    currentPacket.gyroZ = static_cast<int16_t>(gyroData[2] * 57.2958f * 100.0f);    // Magnetometer in 0.1 µT
+    // Check for invalid readings (all zeros)
+    bool magIsAllZeros = (magData[0] == 0 && magData[1] == 0 && magData[2] == 0);
+
+    if (magIsAllZeros) {
+        // Access the last valid magnetometer readings which were saved in readMagnetometer()
+        static int16_t lastGoodX = 0;
+        static int16_t lastGoodY = 0;
+        static int16_t lastGoodZ = 0;
+        static bool hasSeenGoodData = false;
         
-        #if DEBUG_SENSORS
-        if (allZeros) {
-            Serial.println("<DEBUG:MAG_USING_PLACEHOLDER_VALUES_FOR_ZEROS>");
+        // Get reference to the cached good values from readMagnetometer() function
+        extern bool SensorManager_hasValidReadingEver;
+        extern int16_t SensorManager_lastValidX;
+        extern int16_t SensorManager_lastValidY;
+        extern int16_t SensorManager_lastValidZ;
+        
+        // Use last good values if we have them
+        if (hasSeenGoodData) {
+            // Use our own cached values
+            currentPacket.magX = lastGoodX;
+            currentPacket.magY = lastGoodY;
+            currentPacket.magZ = lastGoodZ;
+        } else if (SensorManager_hasValidReadingEver) {
+            // Use values from the magnetometer reading function
+            currentPacket.magX = SensorManager_lastValidX;
+            currentPacket.magY = SensorManager_lastValidY;
+            currentPacket.magZ = SensorManager_lastValidZ;
+            
+            // Save these for next time
+            lastGoodX = SensorManager_lastValidX;
+            lastGoodY = SensorManager_lastValidY; 
+            lastGoodZ = SensorManager_lastValidZ;
+            hasSeenGoodData = true;
         } else {
-            Serial.println("<DEBUG:MAG_USING_PLACEHOLDER_VALUES_FOR_Z_STUCK>");
+            // No good values ever - use neutral values that won't affect heading
+            currentPacket.magX = 0;
+            currentPacket.magY = 0;
+            currentPacket.magZ = 1; // Tiny non-zero value to prevent division by zero
+        }
+        
+        #if DEBUG_SENSORS
+        static unsigned long lastPlaceholderTime = 0;
+        if (millis() - lastPlaceholderTime > 10000) { // Log only every 10 seconds to reduce spam
+            Serial.print("<DEBUG:MAG_USING_LASTVALUES:ALL_ZEROS");
+            Serial.print(",X=");
+            Serial.print(currentPacket.magX);
+            Serial.print(",Y=");
+            Serial.print(currentPacket.magY);
+            Serial.print(",Z=");
+            Serial.print(currentPacket.magZ);
+            Serial.println(">");
+            lastPlaceholderTime = millis();
         }
         #endif
     } else {
-        // Use actual magnetometer values
-        currentPacket.magX = static_cast<int16_t>(magData.x * 10.0f);
-        currentPacket.magY = static_cast<int16_t>(magData.y * 10.0f);
-        currentPacket.magZ = static_cast<int16_t>(magData.z * 10.0f);
-    }// GPS location in 1e-7 degrees
+        // Use actual magnetometer values, BMM150 values are already in µT
+        // Convert to 0.1µT by multiplying by 10 and cast to int16
+        currentPacket.magX = static_cast<int16_t>(magData[0]); 
+        currentPacket.magY = static_cast<int16_t>(magData[1]);
+        currentPacket.magZ = static_cast<int16_t>(magData[2]);
+    }
+      // GPS data - Clean approach using TinyGPSPlus library with enhanced error detection
     
-    // Get satellite count purely from TinyGPS++ library
-    if (gps.satellites.isValid()) {
-        // TinyGPS++ has valid satellite data - use it directly
-        currentPacket.satellites = static_cast<uint8_t>(gps.satellites.value());
-        
-        // Log the satellite count value periodically
-        #if DEBUG_SENSORS
-        static unsigned long lastSatCountLog = 0;
-        if (millis() - lastSatCountLog > 5000) {
-            Serial.print("<DEBUG:SAT_COUNT_FROM_GPS_VALID:");
-            Serial.print(currentPacket.satellites);
-            Serial.println(">");
-            lastSatCountLog = millis();
+    // First, check if we're getting valid GPS messages at all
+    static unsigned long lastCharsProcessed = 0;
+    static unsigned long lastGpsCheck = 0;
+    static bool gpsDataFlowing = false;
+    
+    if (millis() - lastGpsCheck > 5000) { // Check GPS data flow every 5 seconds
+        unsigned long currentCharsProcessed = gps.charsProcessed();
+        if (currentCharsProcessed > lastCharsProcessed) {
+            // We're receiving some GPS data
+            gpsDataFlowing = true;
+            lastCharsProcessed = currentCharsProcessed;
+        } else {
+            // No new data since last check - possible hardware issue
+            gpsDataFlowing = false;
+            #if DEBUG_SENSORS
+            Serial.println("<DEBUG:GPS_NO_DATA_FLOW:POSSIBLE_HARDWARE_ISSUE>");
+            #endif
         }
-        #endif
-    } else if (gps.charsProcessed() > 1000) {
-        // If we've received significant data but still no satellite count,
-        // use a minimum value of 1 to indicate the GPS is working
-        currentPacket.satellites = 1;
-        
-        #if DEBUG_SENSORS
-        static unsigned long lastSatParseAttempt = 0;
-        if (millis() - lastSatParseAttempt > 5000) {
-            Serial.print("<DEBUG:SAT_COUNT_FORCED:");
-            Serial.print(currentPacket.satellites);
-            Serial.print(",CHARS_PROCESSED:");
-            Serial.print(gps.charsProcessed());
-            Serial.println(">");
-            lastSatParseAttempt = millis();
-        }
-        #endif
-    } else {
-        // Not enough data yet
-        currentPacket.satellites = 0;
+        lastGpsCheck = millis();
     }
     
-    if (gps.location.isValid()) {
-        // We have a valid location
+    // Get satellite count with validity check
+    if (gps.satellites.isValid()) {
+        currentPacket.satellites = static_cast<uint8_t>(gps.satellites.value());
+        
+        #if DEBUG_SENSORS
+        static uint8_t lastSatCount = 0;
+        if (currentPacket.satellites != lastSatCount) {
+            Serial.print("<DEBUG:GPS_SATELLITE_COUNT_CHANGED:");
+            Serial.print(lastSatCount);
+            Serial.print("->");
+            Serial.print(currentPacket.satellites);
+            Serial.println(">");
+            lastSatCount = currentPacket.satellites;
+        }
+        #endif
+    } else {
+        if (gpsDataFlowing) {
+            // We have data flow but no valid satellite count yet
+            currentPacket.satellites = 0;
+        } else {
+            // No data flow - could be disconnected
+            currentPacket.satellites = 0;
+            #if DEBUG_SENSORS
+            static unsigned long lastDisconnectTime = 0;
+            if (millis() - lastDisconnectTime > 30000) { // Log every 30 seconds
+                Serial.println("<DEBUG:GPS_POSSIBLE_DISCONNECT:NO_DATA_RECEIVED>");
+                lastDisconnectTime = millis();
+            }
+            #endif
+        }
+    }
+    
+    // Check location data validity and quality
+    bool hasValidLocation = false;
+    
+    if (gps.location.isValid() && currentPacket.satellites > 3) { // Require at least 4 satellites for a reliable fix
+        // Check for reasonable latitude and longitude values (avoid 0,0 bug)
+        if (gps.location.lat() != 0.0 && gps.location.lng() != 0.0) {
+            // Check for change in location (avoid stuck GPS bug)
+            static double lastLat = 0.0, lastLon = 0.0;
+            static unsigned long lastLocationChangeTime = 0;
+            static bool locationChanged = false;
+            
+            if (gps.location.lat() != lastLat || gps.location.lng() != lastLon) {
+                lastLat = gps.location.lat();
+                lastLon = gps.location.lng();
+                lastLocationChangeTime = millis();
+                locationChanged = true;
+            } else if (millis() - lastLocationChangeTime > 60000) { // No change for 1 minute
+                // Possibly stuck GPS values
+                #if DEBUG_SENSORS
+                static unsigned long lastStuckTime = 0;
+                if (millis() - lastStuckTime > 30000) { // Log every 30 seconds
+                    Serial.println("<DEBUG:GPS_LOCATION_STUCK:POSITION_NOT_UPDATING>");
+                    lastStuckTime = millis();
+                }
+                #endif
+                
+                // Don't mark as valid if we've been stuck for too long
+                if (millis() - lastLocationChangeTime > 120000) { // 2 minutes stuck
+                    locationChanged = false;
+                }
+            }
+            
+            hasValidLocation = locationChanged;
+        }
+    }
+    
+    // Process location data
+    if (hasValidLocation) {
+        // We have a valid fix - convert to int32 in 1e-7 degrees format
         currentPacket.latitude = static_cast<int32_t>(gps.location.lat() * 10000000.0);
         currentPacket.longitude = static_cast<int32_t>(gps.location.lng() * 10000000.0);
         
         #if DEBUG_SENSORS
-        static unsigned long lastGpsValidLog = 0;
-        if (millis() - lastGpsValidLog > 5000) {  // Log every 5 seconds
-            Serial.print("<DEBUG:VALID_GPS_DATA:LAT=");
+        static bool firstValidFix = true;
+        if (firstValidFix) {
+            Serial.print("<DEBUG:GPS_FIRST_VALID_FIX:LAT=");
             Serial.print(gps.location.lat(), 6);
             Serial.print(",LON=");
             Serial.print(gps.location.lng(), 6);
-            Serial.print(",SAT=");
-            Serial.print(currentPacket.satellites);  // Use our stored value
-            Serial.print(",AGE=");
-            Serial.print(gps.location.age());
+            Serial.print(",SATS=");
+            Serial.print(currentPacket.satellites);
             Serial.println(">");
-            lastGpsValidLog = millis();
+            firstValidFix = false;
+        }
+        
+        // Log altitude data if available
+        if (gps.altitude.isValid()) {
+            static unsigned long lastAltTime = 0;
+            if (millis() - lastAltTime > 30000) { // Every 30 seconds
+                Serial.print("<DEBUG:GPS_ALTITUDE=");
+                Serial.print(gps.altitude.meters());
+                Serial.println("m>");
+                lastAltTime = millis();
+            }
         }
         #endif
     } else {
-        // If we have some satellites but no fix yet, use special indicator values
+        // No valid fix - use special placeholder values with additional diagnostics
         if (currentPacket.satellites > 0) {
-            currentPacket.latitude = 10;   // Special value indicating "satellites visible but no fix"
-            currentPacket.longitude = 10;  // Special value indicating "satellites visible but no fix"
+            // We have satellites but no fix
+            currentPacket.latitude = 10;  // Special value: satellites visible but no fix
+            currentPacket.longitude = 10;
+            
+            #if DEBUG_SENSORS
+            static unsigned long lastNoFixLog = 0;
+            if (millis() - lastNoFixLog > 30000) { // Log every 30 seconds
+                Serial.print("<DEBUG:GPS_HAS_SATELLITES_BUT_NO_FIX:SATS=");
+                Serial.print(currentPacket.satellites);
+                if (gps.location.isValid()) {
+                    Serial.print(",POSSIBLE_BAD_DATA:LAT=");
+                    Serial.print(gps.location.lat(), 6);
+                    Serial.print(",LON=");
+                    Serial.print(gps.location.lng(), 6);
+                }
+                Serial.println(">");
+                lastNoFixLog = millis();
+            }
+            #endif
         } else {
-            // No satellites at all - possibly indoors or antenna issue
-            currentPacket.latitude = 1;    // Special value indicating "no satellites"
-            currentPacket.longitude = 1;   // Special value indicating "no satellites"
+            // No satellites at all
+            currentPacket.latitude = 1;  // Special value: no satellites at all
+            currentPacket.longitude = 1;
+            
+            #if DEBUG_SENSORS
+            static unsigned long lastNoSatsTime = 0;
+            if (millis() - lastNoSatsTime > 30000) { // Log every 30 seconds
+                Serial.print("<DEBUG:GPS_NO_SATELLITES:CHARS_PROCESSED=");
+                Serial.print(gps.charsProcessed());
+                Serial.println(">");
+                lastNoSatsTime = millis();
+            }
+            #endif
         }
-        
-        #if DEBUG_SENSORS
-        static unsigned long lastGpsInvalidLog = 0;
-        if (millis() - lastGpsInvalidLog > 5000) {  // Log every 5 seconds
-            Serial.print("<DEBUG:GPS_STATUS:SATELLITES=");
-            Serial.print(currentPacket.satellites);
-            Serial.print(",CHARS_PROCESSED=");
-            Serial.print(gps.charsProcessed());
-            Serial.print(",SENTENCES_WITH_FIX=");
-            Serial.print(gps.sentencesWithFix());
-            Serial.print(",FAILED_CHECKSUM=");
-            Serial.print(gps.failedChecksum());
-            Serial.println(">");
-            lastGpsInvalidLog = millis();
-        }
-        #endif
     }
     
     // Include RTC data in packet
@@ -1530,7 +1305,8 @@ void SensorManager::processSensorData() {
     currentPacket.hour = rtcHour;
     currentPacket.minute = rtcMinute;
     currentPacket.second = rtcSecond;
-      // Calculate CRC-16 for the packet using FrameCodec utility
+    
+    // Calculate CRC-16 for the packet using FrameCodec utility
     currentPacket.crc16 = FrameCodec::calculateSensorPacketCRC(
         reinterpret_cast<const uint8_t*>(&currentPacket), 
         sizeof(SensorPacket)
@@ -1556,22 +1332,10 @@ bool SensorManager::isPacketReady() {
 }
 
 uint8_t SensorManager::getGpsSatelliteCount() const {
-    // Use a non-const approach with mutable to safely handle the 
-    // non-const methods in TinyGPSPlus while keeping our method const
-    TinyGPSPlus& non_const_gps = const_cast<TinyGPSPlus&>(gps);
-    
-    // Check if satellites info is valid before accessing
-    if (non_const_gps.satellites.isValid()) {
-        return static_cast<uint8_t>(non_const_gps.satellites.value());
-    }
-    
-    // Return current packet's satellite count if TinyGPS doesn't have valid data
-    // but we've determined satellite count through other means
-    if (currentPacket.satellites > 0) {
-        return currentPacket.satellites;
-    }
-    
-    return 0;
+    // The satellite count is populated in currentPacket.satellites by processSensorData(),
+    // which correctly handles TinyGPSPlus validity and value extraction in a non-const context.
+    // processSensorData sets currentPacket.satellites to 0 if gps.satellites is not valid.
+    return currentPacket.satellites;
 }
 
 void SensorManager::setStatusLED(uint8_t r, uint8_t g, uint8_t b) {

@@ -46,6 +46,12 @@ void setup() {
   unsigned long startWaitTime = millis();
   while (!Serial && (millis() - startWaitTime < 3000));
   
+  // Initialize I2C at 100kHz for better stability with the magnetometer
+  Wire.setSCL(PB8);
+  Wire.setSDA(PB9);
+  Wire.begin();
+  Wire.setClock(100000); // 100kHz clock rate for reliable I2C communication
+  
   // Initialize pins for UART communication with FC
   pinMode(PA3, OUTPUT); // TX pin (NAVC to FC)
   pinMode(PA2, INPUT_PULLUP); // RX pin (FC to NAVC)
@@ -66,6 +72,8 @@ void setup() {
   Serial.println("<DEBUG:NAVC_INIT>");
   Serial.println("<DEBUG:USB_DEBUG:ENABLED>");
   Serial.println("<DEBUG:BAUD_RATE:921600>");
+  Serial.println("<DEBUG:I2C_CLOCK:100kHz>"); // Log the I2C clock speed
+  
   // Initialize sensors with more detailed error reporting
   Serial.println("<DEBUG:ATTEMPTING_SENSOR_INIT>");
   
@@ -229,57 +237,111 @@ void loop() {
 }
 
 void reportStatus() {
-  char buffer[128]; // Larger buffer for more detailed reports
-  
+  char buffer[256]; // Increased buffer for more detailed reports
+  SensorPacket packet = sensorManager.getPacket(); // Get the latest packet
+
+  // Consolidated USB Debug Output
+  if (usbDebugEnabled) {
+    char debugOutput[200]; // Buffer for consolidated debug string
+    snprintf(debugOutput, sizeof(debugOutput),
+             "NAVC Data: TS=%lu, Lat=%ld, Lon=%ld, Alt=%ld, Sats=%u, AccX=%d, AccY=%d, AccZ=%d, GyroX=%d, GyroY=%d, GyroZ=%d, MagX=%d, MagY=%d, MagZ=%d",
+             packet.timestamp,
+             packet.latitude,
+             packet.longitude,
+             packet.altitude,
+             packet.satellites,
+             packet.accelX,
+             packet.accelY,
+             packet.accelZ,
+             packet.gyroX,
+             packet.gyroY,
+             packet.gyroZ,
+             packet.magX,
+             packet.magY,
+             packet.magZ);
+    Serial.println(debugOutput);
+  }
+
   // Report sampling statistics
   snprintf(buffer, sizeof(buffer), "<DEBUG:SAMPLE_RATE:%.2f>", actualSampleRate);
   Serial.println(buffer);
-  
+
   // Report packet statistics
   snprintf(buffer, sizeof(buffer), "<DEBUG:PACKETS_SENT:%lu>", packetManager.getPacketsSent());
   Serial.println(buffer);
-  
+
   snprintf(buffer, sizeof(buffer), "<DEBUG:PACKET_LOSS_RATE:%.2f%%>", packetManager.getPacketLossRate());
   Serial.println(buffer);
-  
+
   // Report loop performance
   snprintf(buffer, sizeof(buffer), "<DEBUG:LOOP_RATE:%lu>", loopCounter);
   Serial.println(buffer);
+
+  // Report sensor health with improved accuracy
   
-  // Report sensor health - get the latest packet
-  SensorPacket packet = sensorManager.getPacket();
-  // Check if sensors are producing reasonable data
+  // Accelerometer - check for reasonable non-zero values
   bool accelOK = (packet.accelX != 0 || packet.accelY != 0 || packet.accelZ != 0);
+  
+  // Gyroscope - some drift is normal, so being exactly zero is unlikely
   bool gyroOK = (packet.gyroX != 0 || packet.gyroY != 0 || packet.gyroZ != 0);
   
-  // Magnetometer is OK as long as we have any non-zero values
-  // We're using placeholder values when necessary
-  bool magOK = (packet.magX != 0 || packet.magY != 0 || packet.magZ != 0);
+  // Magnetometer - considered OK if NOT using the placeholder values we defined (10,5,50)
+  bool magOK = !(packet.magX == 10 && packet.magY == 5 && packet.magZ == 50);
+  char magBuf[30];
+  snprintf(magBuf, sizeof(magBuf), "%s(%d,%d,%d)", 
+           magOK ? "OK" : "ERR",
+           packet.magX, packet.magY, packet.magZ);
   
-  // For GPS, always consider OK with satellite count (we're using placeholder values)
-  // This is the key change - we consider it OK even with 0 satellites to address the ERR status
-  bool gpsOK = true;
-  char gpsBuf[30];
-  snprintf(gpsBuf, sizeof(gpsBuf), "%s(%d)", 
-           gpsOK ? "OK" : "ERR", 
-           packet.satellites);
+  // GPS - considered OK only if we have at least 1 satellite
+  bool gpsOK = (packet.satellites > 0);
   
-  // For RTC, include the current date in the status
+  // GPS status includes the satellite count and whether we have a valid fix
+  // A valid fix is indicated by latitude/longitude not being the placeholder values (1,1 or 10,10)
+  bool hasValidFix = (packet.latitude != 1 && packet.longitude != 1 && 
+                     packet.latitude != 10 && packet.longitude != 10);
+                     
+  char gpsBuf[50];
+  snprintf(gpsBuf, sizeof(gpsBuf), "%s(%u,%s)", 
+           gpsOK ? "OK" : "ERR",
+           packet.satellites,
+           hasValidFix ? "FIX" : "NO_FIX");
+
+  // Barometer - check if producing non-zero altitude
+  bool baroOK = (packet.altitude != 0);
+  
+  // RTC - check for reasonable date/time values
+  bool rtcOK = (packet.year > 0 && packet.year <= 99 && 
+               packet.month >= 1 && packet.month <= 12 && 
+               packet.day >= 1 && packet.day <= 31);
+               
   char rtcBuf[30];
   snprintf(rtcBuf, sizeof(rtcBuf), "%s(20%02d-%02d-%02d)",
-           packet.year > 0 ? "OK" : "ERR",
+           rtcOK ? "OK" : "ERR",
            packet.year, packet.month, packet.day);
-  
-  snprintf(buffer, sizeof(buffer), 
+
+  // Generate comprehensive sensor status report
+  snprintf(buffer, sizeof(buffer),
           "<DEBUG:SENSORS:ACCEL=%s,GYRO=%s,MAG=%s,GPS=%s,BARO=%s,RTC=%s>",
           accelOK ? "OK" : "ERR",
           gyroOK ? "OK" : "ERR",
-          magOK ? "OK" : "ERR",
+          magBuf,
           gpsBuf,
-          packet.altitude != 0 ? "OK" : "ERR",
+          baroOK ? "OK" : "ERR",
           rtcBuf);
   Serial.println(buffer);
   
+  // Add calibration reminder if magnetometer or GPS show issues
+  static unsigned long lastCalibrationReminder = 0;
+  if ((!magOK || !gpsOK) && (millis() - lastCalibrationReminder > 30000)) {
+    if (!magOK) {
+      Serial.println("<DEBUG:MAG_CALIBRATION_REMINDER:MOVE_DEVICE_IN_FIGURE_8_PATTERN>");
+    }
+    if (!gpsOK) {
+      Serial.println("<DEBUG:GPS_REMINDER:ENSURE_CLEAR_VIEW_OF_SKY_AND_ALLOW_TIME_TO_ACQUIRE>");
+    }
+    lastCalibrationReminder = millis();
+  }
+
   // Reset counter
   loopCounter = 0;
 }

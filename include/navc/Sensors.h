@@ -7,11 +7,11 @@
 #include <RTClib.h>
 #include <Adafruit_BMP280.h>
 #include <BMI088.h>
-#include <bmm150.h>
+#include <BMM150.h> // Seeed Studio BMM150 library
 #include <Adafruit_NeoPixel.h>
 
 // Set to 1 to enable debug output
-#define DEBUG_SENSORS 0
+#define DEBUG_SENSORS 1  // Enable debug output for diagnostics
 
 // Sensor reading and fusion rates
 #define SENSOR_SAMPLE_RATE_HZ 100
@@ -44,30 +44,23 @@ typedef struct {
     uint16_t crc16;      // CRC-16 checksum
 } __attribute__((packed)) SensorPacket;
 
-// BMM150 user data structure
-struct bmm150_user_data {
-    uint8_t dev_addr;
-    void *intf_ptr;
-};
+// Using Seeed Studio BMM150 library, no custom structure needed
 
 // Class to manage sensors
 class SensorManager {
-private:
-    // Hardware drivers
+private:    // Hardware drivers
     TwoWire *i2c;
     Bmi088Accel *accel;
     Bmi088Gyro *gyro;
-    struct bmm150_dev mag;
-    bmm150_user_data magUserData;
+    BMM150 mag; // Seeed Studio BMM150 library
     Adafruit_BMP280 baro;
     RTC_DS3231 rtc;
     TinyGPSPlus gps;
     Adafruit_NeoPixel statusLed;
-    
-    // Raw sensor data
+      // Raw sensor data
     float accelData[3];  // X, Y, Z in m/s^2
     float gyroData[3];   // X, Y, Z in rad/s
-    struct bmm150_mag_data magData;  // X, Y, Z in µT
+    float magData[3];    // X, Y, Z magnetometer data
     float temperature;   // in °C
     float pressure;      // in Pa
     float altitude;      // in m
@@ -92,7 +85,7 @@ private:
     // Private methods
     void readAccelGyro();
     void readMagnetometer();
-    void readBarometer();    void readGPS();
+    void readBarometer();
     void updateTime();
     void processSensorData();
     
