@@ -17,7 +17,7 @@
 
 // LoRa configuration
 #define LORA_FREQUENCY        915.0
-#define LORA_BANDWIDTH        250.0
+#define LORA_BANDWIDTH        500.0
 #define LORA_SPREADING_FACTOR 7
 #define LORA_CODING_RATE      5
 #define LORA_SYNC_WORD        0xAB

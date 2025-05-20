@@ -344,16 +344,23 @@ void setup() {
   
   Serial.println("\n<DEBUG:GS_INIT>");
   printHelp();
-    // Initialize LoRa communication  Serial.println("<DEBUG:INITIALIZING_LORA>");
+  // Initialize LoRa communication  Serial.println("<DEBUG:INITIALIZING_LORA>");
   if (loraManager.begin(LORA_GS_ADDR, LORA_FC_ADDR)) {
     Serial.println("<DEBUG:LORA_INIT_SUCCESS>");
     Serial.println("<GS_LINK:READY>");
     
-    // Set the packet handler
+    // Immediately check for pending packets to avoid delays
+    loraManager.checkQueue();
+    loraManager.checkReceived();
+      // Set the packet handler
     loraManager.onPacketReceived = handleLoraPacket;
     
     // Enable ping mechanism for better link quality assessment
     loraManager.enablePing(true);
+    
+    // Send a status message to confirm GS is ready
+    Serial.println("<DEBUG:GS_READY_FOR_SETTINGS>");
+    loraManager.sendPacket(LORA_TYPE_STATUS, "<GS_READY_FOR_SETTINGS>", 22);
   } else {
     Serial.println("<DEBUG:LORA_INIT_FAILED>");
     Serial.println("<GS_LINK:ERROR>");

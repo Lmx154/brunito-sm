@@ -39,14 +39,14 @@ static const uint32_t LORA_LINK_REPORT_PERIOD_MS = 30'000;   // 30 seconds, same
 static const uint32_t UART_LOSS_REPORT_PERIOD_MS = 10'000;   // 10 seconds
 
 // Telemetry control variables
-uint8_t telemRate = 20; // Default 20 Hz
+uint8_t telemRate = 10; // Default fixed to 10 Hz for optimal command reception
 unsigned long lastTelemTime = 0;
-unsigned long telemPeriodMs = 50; // 50ms = 20Hz
+unsigned long telemPeriodMs = 100; // 100ms = 10Hz
 
 // Forward declarations
 void reportLoraLinkStatus();
 String formatTelem(const SensorPacket& packet, bool gpsOnly);
-void startTelemetry(uint8_t hz = 20);
+void startTelemetry(uint8_t hz = 10);
 void adjustTelemRate();
 void reinitializeUart();
 
@@ -104,10 +104,9 @@ String formatTelem(const SensorPacket& packet, bool gpsOnly) {
 void startTelemetry(uint8_t hz) {
   // Set the maximum desired rate
   telemRate = hz;
-  
-  // Cap rate based on bandwidth constraints - increased from 20 to 30 Hz
-  if (telemRate > 30) {
-    telemRate = 30; // Maximum 30 Hz (increased from 20 Hz)
+    // Cap rate at 10 Hz maximum to ensure reliable command handling
+  if (telemRate > 10) {
+    telemRate = 10; // Maximum 10 Hz for optimal command reception
   }
   
   // Force immediate rate adjustment check
@@ -152,8 +151,7 @@ void adjustTelemRate() {
   // Check for failed transmissions to adapt rate
   float lossRate = loraManager.getPacketLossRate();
   uint8_t pendingCount = loraManager.getPendingPacketCount();
-  
-  // Very aggressive rate adjustment based on multiple factors
+    // Very aggressive rate adjustment based on multiple factors
   if (rssi < -110 || lossRate > 0.3 || pendingCount > 3) {
     // Very poor link quality - reduce to 1 Hz
     newRate = 1;
@@ -163,12 +161,11 @@ void adjustTelemRate() {
   } else if (rssi < -90 || lossRate > 0.1 || pendingCount > 1) {
     // Fair link quality - reduce to 5 Hz
     newRate = 5;  } else if (rssi < -80) {
-    // Good link quality - use 15 Hz
-    newRate = 15;
+    // Good link quality - use 8 Hz
+    newRate = 8;
   } else {
-    // Excellent link quality - use full rate up to 25 Hz
-    // Increased from 15Hz to 25Hz for faster telemetry
-    newRate = 25;
+    // Excellent link quality - use max 10 Hz to ensure command reception
+    newRate = 10;
   }
   
   // Only update if rate changed
@@ -421,6 +418,13 @@ void handleLoraPacket(LoraPacket* packet) {
     FrameCodec::formatDebug(buffer, sizeof(buffer), "LORA_CMD");
     Serial.println(buffer);
     
+  // Check for critical commands like DISARM and ENTER_RECOVERY that need priority handling
+    bool isEmergencyCommand = false;
+    if (strstr(cmdBuffer, "DISARM") || strstr(cmdBuffer, "ENTER_RECOVERY")) {
+      isEmergencyCommand = true;
+      Serial.println("<DEBUG:PRIORITY_COMMAND_RECEIVED>");
+    }
+    
     // Process command through the parser
     for (size_t i = 0; i < packet->len; i++) {
       cmdParser.processChar(cmdBuffer[i]);
@@ -430,8 +434,16 @@ void handleLoraPacket(LoraPacket* packet) {
       cmdParser.processChar('>');
     }
     
-    // Force an extra queue check to immediately process any resulting ACKs
-    loraManager.checkQueue();
+    // For critical commands, process the queue multiple times to ensure ACKs are sent quickly
+    if (isEmergencyCommand) {
+      // Force immediate queue processing multiple times
+      loraManager.checkQueue();
+      loraManager.checkQueue();
+      loraManager.checkQueue();
+    } else {
+      // Force a single queue check for regular commands
+      loraManager.checkQueue();
+    }
   }
 }
 
@@ -736,6 +748,49 @@ void uartTask() {
   }
 }
 
+/**
+ * Try to send LoRa settings if GS is connected.
+ * Called periodically to ensure settings are sent
+ * but with protective measures to avoid infinite loops.
+ */
+void trySendLoraSettings() {
+  static bool settingsAttempted = false;
+  static uint32_t lastAttempt = 0;
+  static uint8_t attemptCount = 0;
+  const uint32_t RETRY_INTERVAL = 60000; // 1 minute between attempts
+  const uint8_t MAX_ATTEMPTS = 3;        // Maximum 3 attempts ever
+  
+  uint32_t now = millis();
+  
+  // Check if we've already successfully sent settings
+  if (settingsAttempted) {
+    return;
+  }
+  
+  // Check if we've reached max attempts
+  if (attemptCount >= MAX_ATTEMPTS) {
+    return;
+  }
+  
+  // Check if it's time for another attempt
+  if (lastAttempt > 0 && (now - lastAttempt < RETRY_INTERVAL)) {
+    return;
+  }
+  
+  // Only send settings if we believe GS is connected
+  if (loraManager.isConnected()) {
+    if (loraManager.sendSettings()) {
+      Serial.println("<DEBUG:LORA_SETTINGS_SENT>");
+      settingsAttempted = true;
+    } else {
+      Serial.println("<DEBUG:LORA_SETTINGS_SEND_FAILED>");
+    }
+    
+    lastAttempt = now;
+    attemptCount++;
+  }
+}
+
 void setup() {
   // Initialize serial communication for debug
   Serial.begin(921600); // FC uses a higher baud rate for USB-CDC
@@ -792,10 +847,15 @@ void setup() {
   // Initialize LoRa communication
   FrameCodec::formatDebug(buffer, sizeof(buffer), "INITIALIZING_LORA");
   Serial.println(buffer);
-  
   if (loraManager.begin(LORA_FC_ADDR, LORA_GS_ADDR)) {
     FrameCodec::formatDebug(buffer, sizeof(buffer), "LORA_INIT_SUCCESS");
     Serial.println(buffer);
+    
+    // Wait for a moment to ensure the GS is ready
+    delay(1000);
+    
+    // Process queue but DO NOT send settings yet
+    loraManager.checkQueue();
     
     // Set the packet handler
     loraManager.onPacketReceived = handleLoraPacket;
@@ -841,14 +901,16 @@ void loop() {
       lastBandwidthReport = now;
       loraManager.reportBandwidthUsage();
     }
-    
     // For more reliability, process the queue more frequently for ACKs when commands are being processed
     static unsigned long lastCommandTime = 0;
-    const unsigned long commandProcessingWindow = 1000; // 1 second window after receiving a command
+    const unsigned long commandProcessingWindow = 3000; // 3 second window after receiving a command (increased from 2s)
     
     if (now - lastCommandTime < commandProcessingWindow) {
       // We are in a post-command processing window, check queue more frequently
+      // Process queue up to 3 times for faster command processing
       loraManager.checkQueue();
+      loraManager.checkQueue(); 
+      loraManager.checkQueue(); // Add another check for critical commands
     }
       // Send ping to check link quality
     loraManager.sendPing();
@@ -857,9 +919,15 @@ void loop() {
     if (now - lastLoraLinkReport >= LORA_LINK_REPORT_PERIOD_MS) {
       lastLoraLinkReport = now;
       reportLoraLinkStatus();
-    }
-      // Removed packet loss reporting as it's causing more problems than it solves
+    }    // Removed packet loss reporting as it's causing more problems than it solves
     // No need to track and report UART packet loss statistics
+    
+    // Periodically check if we should send settings, but only if connected
+    static unsigned long lastSettingsCheck = 0;
+    if (now - lastSettingsCheck >= 30000) { // Check every 30 seconds
+      lastSettingsCheck = now;
+      trySendLoraSettings(); // This has safety mechanisms built in
+    }
   }
     // Update heartbeat pattern if state changed
   updateHeartbeatPattern();
