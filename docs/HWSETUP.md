@@ -102,7 +102,7 @@ Each component (NAVC, FC, GS) uses a `build_src_filter` and `build_flags` for so
 * **Servo Motor:** PWM (PB14)
 
   * Timer: TIM2, CH3, 200Hz
-* **Buzzer:** Digital Output (PB13)
+* **Buzzer:** Digital Output (PA0) - Passive buzzer
 * **UART to NAVC:** Serial2 (115200 bps)
 
   * TX: PA3, RX: PA2

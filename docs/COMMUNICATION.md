@@ -27,7 +27,7 @@ The system uses Arduino’s cooperative loop without an RTOS, and a finite-state
 - **Responsibilities**: Sample sensors at 100 Hz, fuse data, log to SD, communicate via UART2.
 
 ### 3.2 Flight Controller (FC)
-- **Hardware**: STM32F401CCU6, RFM95W LoRa (SPI: NSS PA4, DIO0 PA8, NRST PA9, DIO1 PA10), PWM servo (PB10, TIM2 CH3, 200Hz), buzzer (PB13).
+- **Hardware**: STM32F401CCU6, RFM95W LoRa (SPI: NSS PA4, DIO0 PA8, NRST PA9, DIO1 PA10), PWM servo (PB10, TIM2 CH3, 200Hz), passive buzzer (PA0).
 - **Software**: Arduino framework with RadioLib.
 - **Responsibilities**: Manage FSM, route commands, convert packets to ASCII, control actuators.
 

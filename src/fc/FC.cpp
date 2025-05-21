@@ -796,8 +796,8 @@ void setup() {
   Serial.begin(921600); // FC uses a higher baud rate for USB-CDC
   while (!Serial && millis() < 3000); // Wait for Serial, but timeout after 3 seconds
     // Configure buzzer pin
-  pinMode(PB13, OUTPUT);
-  digitalWrite(PB13, LOW);
+  pinMode(PA0, OUTPUT);
+  digitalWrite(PA0, LOW);
   
   // Configure UART pins explicitly
   pinMode(PA2, INPUT_PULLUP); // RX pin as input with pullup
