@@ -429,13 +429,27 @@ void processCommand() {
     Serial.println("<DEBUG:USB_DEBUG_DISABLED>");
     sendCommandResponse("<ACK:USB_DEBUG_DISABLED>");
     usbDebugEnabled = false;
-  }
-  else if (strncmp(cmdBuffer, "<ECHO:", 6) == 0) {
-    // Echo the command back (remove trailing '>')
-    cmdBuffer[cmdIndex-1] = '\0';
-    char response[64];
-    snprintf(response, sizeof(response), "<ECHO_RESPONSE:%s>", cmdBuffer+6);
-    sendCommandResponse(response);
+  }  else if (strncmp(cmdBuffer, "<ECHO:", 6) == 0) {
+    // Check if it's a test command for the buzzer
+    if (strcmp(cmdBuffer, "<ECHO:BUZZER_TEST>") == 0) {
+      // This is our test buzzer command
+      Serial.println("<DEBUG:BUZZER_TEST_RECEIVED>");
+      
+      // Activate buzzer on pin A0 (using digitalWrite for simple on/off)
+      pinMode(PA0, OUTPUT);
+      digitalWrite(PA0, HIGH);  // Turn on buzzer
+      delay(500);               // Beep for 500ms
+      digitalWrite(PA0, LOW);   // Turn off buzzer
+      
+      sendCommandResponse("<ACK:BUZZER_TEST_COMPLETE>");
+    } else {
+      // Standard echo command
+      // Echo the command back (remove trailing '>')
+      cmdBuffer[cmdIndex-1] = '\0';
+      char response[64];
+      snprintf(response, sizeof(response), "<ECHO_RESPONSE:%s>", cmdBuffer+6);
+      sendCommandResponse(response);
+    }
   }
   else {
     // Unknown command

@@ -182,8 +182,7 @@ bool StateManager::processCommand(CommandType cmd) {
                 return true;
             }
             break;
-            
-        case CMD_NAVC_RESET_STATS:
+              case CMD_NAVC_RESET_STATS:
             // This command is always allowed
             // Forward to NAVC via UART2
             Serial2.println("RESET_STATS");
@@ -193,6 +192,18 @@ bool StateManager::processCommand(CommandType cmd) {
             FrameCodec::formatDebug(buffer, sizeof(buffer), "NAVC_STATS_RESET_REQUESTED");
             Serial.println(buffer);
             return true;
+            break;              case CMD_TEST_DEVICE:
+            // This command sends a buzzer test request to NAVC
+            if (isCommandAllowed(cmd)) {
+                // Send the command to NAVC to test buzzer
+                // Use a proper command format the NAVC will recognize
+                Serial2.println("<ECHO:BUZZER_TEST>");
+                
+                char buffer[64];
+                FrameCodec::formatDebug(buffer, sizeof(buffer), "TEST_DEVICE_REQUESTED");
+                Serial.println(buffer);
+                return true;
+            }
             break;
             
         default:
@@ -213,15 +224,13 @@ bool StateManager::isCommandAllowed(CommandType cmd) const {
     switch (currentState) {
         case STATE_IDLE:
             // In IDLE, all commands are allowed
-            return true;
-            
-        case STATE_TEST:
-            // In TEST, only TEST, QUERY, ARM are allowed
-            return (cmd == CMD_TEST || cmd == CMD_ARM);
+            return true;        case STATE_TEST:
+            // In TEST, only TEST, QUERY, ARM and TEST_DEVICE are allowed
+            return (cmd == CMD_TEST || cmd == CMD_ARM || cmd == CMD_TEST_DEVICE);
             
         case STATE_ARMED:
-            // In ARMED, all commands except TEST are allowed
-            return (cmd != CMD_TEST);
+            // In ARMED, all commands except TEST and TEST_DEVICE are allowed
+            return (cmd != CMD_TEST && cmd != CMD_TEST_DEVICE);
             
         case STATE_RECOVERY:
             // In RECOVERY, only FIND_ME is allowed (DISARM already handled)

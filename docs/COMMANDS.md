@@ -72,8 +72,8 @@ Below is the complete list of commands, including their descriptions, allowed st
 - **Example**: `<CMD:TELEM_STATUS>`
 
 ### 12. `<CMD:TEST>`
-- **Description**: Performs specific tests on the FC, used in TEST mode to validate system functionality.
-- **Allowed States**: TEST
+- **Description**: Performs testing functions in TEST mode. Currently enables the buzzer on the NAVC board (pin A0) for testing purposes. Future enhancements will add more test functionality.
+- **Allowed States**: TEST only
 - **Example**: `<CMD:TEST>`
 
 ## Usage Notes

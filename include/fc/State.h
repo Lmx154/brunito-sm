@@ -29,7 +29,8 @@ enum CommandType {
     CMD_QUERY,
     CMD_FIND_ME,
     CMD_CONTROL,  // For servo, buzzer, etc.
-    CMD_NAVC_RESET_STATS  // For resetting NAVC packet stats
+    CMD_NAVC_RESET_STATS,  // For resetting NAVC packet stats
+    CMD_TEST_DEVICE  // For generic device testing (only in TEST state)
 };
 
 class StateManager {
