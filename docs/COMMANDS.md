@@ -76,6 +76,11 @@ Below is the complete list of commands, including their descriptions, allowed st
 - **Allowed States**: TEST only
 - **Example**: `<CMD:TEST>`
 
+### 13. `<CMD:SERVO_TEST>`
+- **Description**: Tests the servo on pin PB14 of the Flight Controller by moving it to 90 degrees and back to 0 degrees.
+- **Allowed States**: TEST only
+- **Example**: `<CMD:SERVO_TEST>`
+
 ## Usage Notes
 
 - **Command Format**: Commands must be sent as `<CMD:command_name>` or `<CMD:command_name:parameters>`. Ensure proper formatting, as the FC expects exact syntax.

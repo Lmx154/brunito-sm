@@ -8,6 +8,7 @@
 #include "../include/fc/State.h"
 #include "../include/utils/FrameCodec.h"
 #include <HardwareTimer.h>
+#include <Servo.h>
 
 // Forward declarations for telemetry functions declared in FC.cpp
 extern void startTelemetry(uint8_t hz);
@@ -15,6 +16,7 @@ extern void adjustTelemRate();
 
 // Pin definitions
 const int BUZZER_PIN = PA0;  // Changed from PB13 to PA0 for passive buzzer
+const int SERVO_PIN = PB14;  // Servo pin for testing
 
 // Optimized buzzer frequencies for maximum loudness with passive buzzer
 // Frequencies between 2-3 kHz are typically the most efficient for passive buzzers
@@ -200,7 +202,30 @@ bool StateManager::processCommand(CommandType cmd) {
                 Serial2.println("<ECHO:BUZZER_TEST>");
                 
                 char buffer[64];
-                FrameCodec::formatDebug(buffer, sizeof(buffer), "TEST_DEVICE_REQUESTED");
+                FrameCodec::formatDebug(buffer, sizeof(buffer), "TEST_DEVICE_REQUESTED");                Serial.println(buffer);
+                return true;
+            }
+            break;
+              case CMD_TEST_SERVO:
+            // This command tests the servo movement on pin PB14
+            if (isCommandAllowed(cmd)) {
+                // Create a servo object and attach it to the pin
+                Servo testServo;
+                testServo.attach(SERVO_PIN);
+                
+                // Move to 90 degrees
+                testServo.write(90);
+                delay(500); // Wait for servo to reach position
+                
+                // Move back to 0 degrees
+                testServo.write(0);
+                delay(500); // Wait for servo to reach position
+                
+                // Detach servo to prevent jitter
+                testServo.detach();
+                
+                char buffer[64];
+                FrameCodec::formatDebug(buffer, sizeof(buffer), "SERVO_TEST_COMPLETED");
                 Serial.println(buffer);
                 return true;
             }
@@ -219,18 +244,17 @@ bool StateManager::isCommandAllowed(CommandType cmd) const {
     if (cmd == CMD_DISARM || cmd == CMD_QUERY || cmd == CMD_NAVC_RESET_STATS) {
         return true;
     }
-    
-    // Check state-specific command permissions
-    switch (currentState) {
-        case STATE_IDLE:
-            // In IDLE, all commands are allowed
-            return true;        case STATE_TEST:
-            // In TEST, only TEST, QUERY, ARM and TEST_DEVICE are allowed
-            return (cmd == CMD_TEST || cmd == CMD_ARM || cmd == CMD_TEST_DEVICE);
+      // Check state-specific command permissions
+    switch (currentState) {        case STATE_IDLE:
+            // In IDLE, all commands except TEST_DEVICE and TEST_SERVO are allowed
+            return (cmd != CMD_TEST_DEVICE && cmd != CMD_TEST_SERVO);
+              case STATE_TEST:
+            // In TEST, only TEST, QUERY, ARM, TEST_DEVICE and TEST_SERVO are allowed
+            return (cmd == CMD_TEST || cmd == CMD_ARM || cmd == CMD_TEST_DEVICE || cmd == CMD_TEST_SERVO);
             
         case STATE_ARMED:
-            // In ARMED, all commands except TEST and TEST_DEVICE are allowed
-            return (cmd != CMD_TEST && cmd != CMD_TEST_DEVICE);
+            // In ARMED, all commands except TEST, TEST_DEVICE and TEST_SERVO are allowed
+            return (cmd != CMD_TEST && cmd != CMD_TEST_DEVICE && cmd != CMD_TEST_SERVO);
             
         case STATE_RECOVERY:
             // In RECOVERY, only FIND_ME is allowed (DISARM already handled)

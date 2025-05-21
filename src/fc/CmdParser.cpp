@@ -96,11 +96,12 @@ bool CmdParser::parseAndExecute() {
         } else if (cmd == CMD_QUERY) {
             // For query, include the current state in the acknowledgment
             sendAck(true, stateManager.getStateString());        } else if (cmd == CMD_CONTROL) {
-            sendAck(true, "CONTROL_APPLIED");        
-        } else if (cmd == CMD_NAVC_RESET_STATS) {
+            sendAck(true, "CONTROL_APPLIED");          } else if (cmd == CMD_NAVC_RESET_STATS) {
             sendAck(true, "NAVC_STATS_RESET");
         } else if (cmd == CMD_TEST_DEVICE) {
             sendAck(true, "TEST_SUCCESS");
+        } else if (cmd == CMD_TEST_SERVO) {
+            sendAck(true, "SERVO_TEST_SUCCESS");
         } else {
             // For any other command, use the current state
             sendAck(true, stateManager.getStateString());
@@ -126,6 +127,7 @@ CommandType CmdParser::getCommandType(const char* cmdStr) {    if (strcmp(cmdStr
     if (strcmp(cmdStr, "ENTER_TEST") == 0) return CMD_ENTER_TEST;
     if (strcmp(cmdStr, "ENTER_RECOVERY") == 0) return CMD_ENTER_RECOVERY;
     if (strcmp(cmdStr, "TEST") == 0) return CMD_TEST_DEVICE; // Map "TEST" to our new command
+    if (strcmp(cmdStr, "SERVO_TEST") == 0) return CMD_TEST_SERVO; // New servo test command
     if (strcmp(cmdStr, "QUERY") == 0) return CMD_QUERY;
     if (strcmp(cmdStr, "FIND_ME") == 0) return CMD_FIND_ME;
     if (strncmp(cmdStr, "CONTROL", 7) == 0) return CMD_CONTROL;
