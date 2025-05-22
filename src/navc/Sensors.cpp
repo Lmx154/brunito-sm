@@ -20,6 +20,7 @@ SensorManager::SensorManager() :
     lastSampleTime(0),
     lastFusionTime(0),
     lastStreamTime(0),
+    ledOnTime(0),
     packetCounter(0),
     rtcYear(0),
     rtcMonth(1),
@@ -583,6 +584,12 @@ void SensorManager::update() {
         lastFusionTime = currentTime;
         processSensorData();
     }
+    
+    // Turn off LED after 5 seconds if it was turned on
+    if (ledOnTime > 0 && (currentTime - ledOnTime >= 5000)) {
+        setStatusLED(0, 0, 0); // Turn off the LED
+        ledOnTime = 0; // Reset the timer
+    }
 }
 
 bool SensorManager::updateWithDiagnostics() {
@@ -781,11 +788,16 @@ bool SensorManager::updateWithDiagnostics() {
         
         updateTime();
     }
-    
-    // Process sensor data at SENSOR_FUSION_RATE_HZ (100 Hz)
+      // Process sensor data at SENSOR_FUSION_RATE_HZ (100 Hz)
     if (currentTime - lastFusionTime >= (1000 / SENSOR_FUSION_RATE_HZ)) {
         lastFusionTime = currentTime;
         processSensorData();
+    }
+    
+    // Turn off LED after 5 seconds if it was turned on
+    if (ledOnTime > 0 && (currentTime - ledOnTime >= 5000)) {
+        setStatusLED(0, 0, 0); // Turn off the LED
+        ledOnTime = 0; // Reset the timer
     }
     
     return success;
@@ -1542,6 +1554,14 @@ uint8_t SensorManager::getGpsSatelliteCount() const {
 void SensorManager::setStatusLED(uint8_t r, uint8_t g, uint8_t b) {
     statusLed.setPixelColor(0, statusLed.Color(r, g, b));
     statusLed.show();
+    
+    // Record the time when the LED was turned on (if any color is non-zero)
+    if (r > 0 || g > 0 || b > 0) {
+        ledOnTime = millis();
+    } else {
+        // If turning off the LED, reset the ledOnTime
+        ledOnTime = 0;
+    }
 }
 
 // Utility function to test GPS wiring and communications

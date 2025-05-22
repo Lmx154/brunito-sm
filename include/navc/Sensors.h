@@ -73,11 +73,11 @@ private:    // Hardware drivers
     uint8_t rtcHour;     // Hour (0-23)
     uint8_t rtcMinute;   // Minute (0-59)
     uint8_t rtcSecond;   // Second (0-59)
-    
-    // Timing variables
+      // Timing variables
     unsigned long lastSampleTime;
     unsigned long lastFusionTime;
     unsigned long lastStreamTime;
+    unsigned long ledOnTime;         // Time when LED was turned on
     
     // Packet variables
     uint16_t packetCounter;
