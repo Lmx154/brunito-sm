@@ -7,12 +7,15 @@
 
 #include "../include/fc/State.h"
 #include "../include/utils/FrameCodec.h"
+#include "../include/navc/Sensors.h"  // For SensorPacket structure
+#include "../include/fc/UartManager.h" // For UartManager
 #include <HardwareTimer.h>
 #include <Servo.h>
 
 // Forward declarations for telemetry functions declared in FC.cpp
 extern void startTelemetry(uint8_t hz);
 extern void adjustTelemRate();
+extern UartManager uartManager; // Forward declaration of UartManager instance from FC.cpp
 
 // Pin definitions
 const int BUZZER_PIN = PA0;  // Changed from PB13 to PA0 for passive buzzer
@@ -144,7 +147,7 @@ bool StateManager::changeState(SystemState newState) {
     return true;
 }
 
-bool StateManager::processCommand(CommandType cmd) {
+bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
     // Process commands that might change state
     switch (cmd) {
         case CMD_DISARM:
@@ -226,6 +229,98 @@ bool StateManager::processCommand(CommandType cmd) {
                 
                 char buffer[64];
                 FrameCodec::formatDebug(buffer, sizeof(buffer), "SERVO_TEST_COMPLETED");
+                Serial.println(buffer);                return true;
+            }
+            break;
+              case CMD_TEST_ALTITUDE:
+            // This command tests altitude threshold, buzzer and servo in TEST state
+            if (isCommandAllowed(cmd)) {
+                // Get the current altitude from the NAVC's latest packet
+                const SensorPacket& packet = uartManager.getLatestPacket();
+                
+                // Get altitude in meters (packet.altitude is in cm)
+                float altitudeMeters = packet.altitude / 100.0f;                // Default threshold (in meters) - can be overridden by command parameter
+                float altitudeThreshold = 2.0f;
+                
+                // Check if we received a threshold parameter with the command
+                const char* params = strchr(cmdBuffer + 5, ':');
+                if (params) {
+                    // Skip the colon
+                    params++;
+                    
+                    // Look for threshold parameter
+                    if (strstr(params, "threshold=") != nullptr) {
+                        // Use CmdParser to extract the value
+                        char paramKey[16];
+                        int32_t thresholdCm;
+                        
+                        // Make a copy of the parameter string
+                        char paramCopy[64];
+                        strncpy(paramCopy, params, sizeof(paramCopy) - 1);
+                        paramCopy[sizeof(paramCopy) - 1] = '\0';
+                        
+                        // Find the end of the parameters (could be a colon for checksum or right bracket)
+                        char* end = strchr(paramCopy, ':');
+                        if (end) *end = '\0';
+                        end = strchr(paramCopy, '>');
+                        if (end) *end = '\0';
+                        
+                        // Use strtok to get threshold parameter
+                        char* token = strtok(paramCopy, ",");
+                        while (token != NULL) {
+                            char* equals = strchr(token, '=');
+                            if (equals) {
+                                // Extract key
+                                size_t keyLen = equals - token;
+                                if (keyLen < sizeof(paramKey)) {
+                                    strncpy(paramKey, token, keyLen);
+                                    paramKey[keyLen] = '\0';
+                                    
+                                    // If key is threshold, parse value
+                                    if (strcmp(paramKey, "threshold") == 0) {
+                                        thresholdCm = atol(equals + 1);
+                                        // Convert from cm to meters
+                                        altitudeThreshold = thresholdCm / 100.0f;
+                                        break;
+                                    }
+                                }
+                            }
+                            token = strtok(NULL, ",");
+                        }
+                    }
+                }
+                
+                char buffer[64];
+                snprintf(buffer, sizeof(buffer), "<DEBUG:ALTITUDE_TEST:CURRENT_ALT=%.2fm,THRESHOLD=%.2fm>", 
+                         altitudeMeters, altitudeThreshold);
+                Serial.println(buffer);
+                  // Check if above threshold
+                if (altitudeMeters >= altitudeThreshold) {
+                    // Sound the buzzer
+                    toneMaxVolume(BUZZER_PIN, TONE_TEST);
+                    delay(500); // Buzzer sound duration
+                    noToneMaxVolume(BUZZER_PIN);
+                    
+                    // Move the servo to 90 degrees and back
+                    Servo testServo;
+                    testServo.attach(SERVO_PIN);
+                    
+                    // Move to 90 degrees
+                    testServo.write(90);
+                    delay(500); // Wait for servo to reach position
+                    
+                    // Move back to 0 degrees
+                    testServo.write(0);
+                    delay(500); // Wait for servo to reach position
+                    
+                    // Detach servo to prevent jitter
+                    testServo.detach();
+                    
+                    FrameCodec::formatDebug(buffer, sizeof(buffer), "ALTITUDE_TEST_TRIGGERED");
+                } else {
+                    FrameCodec::formatDebug(buffer, sizeof(buffer), "ALTITUDE_BELOW_THRESHOLD");
+                }
+                
                 Serial.println(buffer);
                 return true;
             }
@@ -246,15 +341,15 @@ bool StateManager::isCommandAllowed(CommandType cmd) const {
     }
       // Check state-specific command permissions
     switch (currentState) {        case STATE_IDLE:
-            // In IDLE, all commands except TEST_DEVICE and TEST_SERVO are allowed
-            return (cmd != CMD_TEST_DEVICE && cmd != CMD_TEST_SERVO);
+            // In IDLE, all commands except TEST_DEVICE, TEST_SERVO, and TEST_ALTITUDE are allowed
+            return (cmd != CMD_TEST_DEVICE && cmd != CMD_TEST_SERVO && cmd != CMD_TEST_ALTITUDE);
               case STATE_TEST:
-            // In TEST, only TEST, QUERY, ARM, TEST_DEVICE and TEST_SERVO are allowed
-            return (cmd == CMD_TEST || cmd == CMD_ARM || cmd == CMD_TEST_DEVICE || cmd == CMD_TEST_SERVO);
+            // In TEST, only TEST, QUERY, ARM, TEST_DEVICE, TEST_SERVO, and TEST_ALTITUDE are allowed
+            return (cmd == CMD_TEST || cmd == CMD_ARM || cmd == CMD_TEST_DEVICE || cmd == CMD_TEST_SERVO || cmd == CMD_TEST_ALTITUDE);
             
         case STATE_ARMED:
-            // In ARMED, all commands except TEST, TEST_DEVICE and TEST_SERVO are allowed
-            return (cmd != CMD_TEST && cmd != CMD_TEST_DEVICE && cmd != CMD_TEST_SERVO);
+            // In ARMED, all commands except TEST, TEST_DEVICE, TEST_SERVO, and TEST_ALTITUDE are allowed
+            return (cmd != CMD_TEST && cmd != CMD_TEST_DEVICE && cmd != CMD_TEST_SERVO && cmd != CMD_TEST_ALTITUDE);
             
         case STATE_RECOVERY:
             // In RECOVERY, only FIND_ME is allowed (DISARM already handled)

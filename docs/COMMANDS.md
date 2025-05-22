@@ -49,7 +49,20 @@ Below is the complete list of commands, including their descriptions, allowed st
 - **Examples**:
   - `<CMD:CONTROL:servo=90>`
   - `<CMD:CONTROL:buzzer=1>`
-  - `<CMD:CONTROL:servo=90,buzzer=1>`
+
+### 8. `<CMD:ALTITUDE_TEST>`
+- **Description**: Tests altitude-based behavior - when altitude exceeds threshold, activates the buzzer and moves servo to 90 degrees and back.
+- **Parameters**:
+  - `threshold` (optional): The altitude threshold in centimeters. Default is 200cm (2m).
+- **Altitude Format**: Altitude values are specified in centimeters. For example:
+  - 200cm = 2 meters
+  - 1000cm = 10 meters (approximately 33ft)
+  - 3048cm = 30.48 meters (100ft)
+  - 10000cm = 100 meters (approximately 328ft)
+- **Allowed States**: TEST only
+- **Examples**: 
+  - `<CMD:ALTITUDE_TEST>` - Uses default 2m threshold
+  - `<CMD:ALTITUDE_TEST:threshold=1000>` - Sets threshold to 10m (33ft)
 
 ### 8. `<CMD:NAVC_RESET_STATS>`
 - **Description**: Resets packet statistics counters on the Navigation Controller (NAVC), forwarded via the FC.

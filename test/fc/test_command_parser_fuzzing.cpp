@@ -51,8 +51,7 @@ public:
     MockStateManager() : StateManager() {
         processCalled = false;
     }
-    
-    bool processCommand(CommandType cmd) override {
+      bool processCommand(CommandType cmd, const char* cmdBuffer = nullptr) override {
         processCalled = true;
         lastCommand = cmd;
         return true;

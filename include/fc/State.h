@@ -30,7 +30,8 @@ enum CommandType {
     CMD_FIND_ME,    CMD_CONTROL,  // For servo, buzzer, etc.
     CMD_NAVC_RESET_STATS,  // For resetting NAVC packet stats
     CMD_TEST_DEVICE,  // For generic device testing (only in TEST state)
-    CMD_TEST_SERVO   // For servo testing (only in TEST state)
+    CMD_TEST_SERVO,   // For servo testing (only in TEST state)
+    CMD_TEST_ALTITUDE // For altitude-based servo and buzzer test (only in TEST state)
 };
 
 class StateManager {
@@ -62,11 +63,10 @@ private:
     
 public:
     StateManager();
-    
-    // State management
+      // State management
     SystemState getCurrentState() const;
     bool changeState(SystemState newState);
-    bool processCommand(CommandType cmd);
+    bool processCommand(CommandType cmd, const char* cmdBuffer = nullptr);
     
     // State-specific behavior
     void updateState();

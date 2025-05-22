@@ -72,11 +72,10 @@ bool CmdParser::parseAndExecute() {
         if (!verifyChecksum(cmdBuffer, providedChecksum)) {
             sendAck(false, "CHECKSUM_ERROR");
             return false;
-        }
-    }
+        }    }
     
     // Process command
-    bool success = stateManager.processCommand(cmd);
+    bool success = stateManager.processCommand(cmd, cmdBuffer);
     
     // Enhanced command acknowledgment reporting
     if (success) {
@@ -97,11 +96,12 @@ bool CmdParser::parseAndExecute() {
             // For query, include the current state in the acknowledgment
             sendAck(true, stateManager.getStateString());        } else if (cmd == CMD_CONTROL) {
             sendAck(true, "CONTROL_APPLIED");          } else if (cmd == CMD_NAVC_RESET_STATS) {
-            sendAck(true, "NAVC_STATS_RESET");
-        } else if (cmd == CMD_TEST_DEVICE) {
+            sendAck(true, "NAVC_STATS_RESET");        } else if (cmd == CMD_TEST_DEVICE) {
             sendAck(true, "TEST_SUCCESS");
         } else if (cmd == CMD_TEST_SERVO) {
             sendAck(true, "SERVO_TEST_SUCCESS");
+        } else if (cmd == CMD_TEST_ALTITUDE) {
+            sendAck(true, "ALTITUDE_TEST_SUCCESS");
         } else {
             // For any other command, use the current state
             sendAck(true, stateManager.getStateString());
@@ -128,6 +128,7 @@ CommandType CmdParser::getCommandType(const char* cmdStr) {    if (strcmp(cmdStr
     if (strcmp(cmdStr, "ENTER_RECOVERY") == 0) return CMD_ENTER_RECOVERY;
     if (strcmp(cmdStr, "TEST") == 0) return CMD_TEST_DEVICE; // Map "TEST" to our new command
     if (strcmp(cmdStr, "SERVO_TEST") == 0) return CMD_TEST_SERVO; // New servo test command
+    if (strcmp(cmdStr, "ALTITUDE_TEST") == 0) return CMD_TEST_ALTITUDE; // New altitude-based test command
     if (strcmp(cmdStr, "QUERY") == 0) return CMD_QUERY;
     if (strcmp(cmdStr, "FIND_ME") == 0) return CMD_FIND_ME;
     if (strncmp(cmdStr, "CONTROL", 7) == 0) return CMD_CONTROL;
@@ -227,6 +228,34 @@ bool CmdParser::validateParameters(const char* cmdStr, const char* params) {
             }
             
             token = strtok(NULL, ",");
+        }
+        
+        return true;    } else if (strcmp(cmdStr, "ALTITUDE_TEST") == 0) {
+        // Example: ALTITUDE_TEST:threshold=1000
+        char key[16] = {0};
+        int32_t value = 0;
+        
+        // Make a copy of params string since strtok modifies the string
+        char paramsCopy[MAX_CMD_LENGTH];
+        strncpy(paramsCopy, params, sizeof(paramsCopy) - 1);
+        
+        // Parse threshold parameter
+        char* token = strtok(paramsCopy, ",");
+        if (token != NULL) {
+            if (!parseParams(token, key, sizeof(key), &value)) {
+                return false;
+            }
+            
+            // Check if parameter is threshold and has a valid value (in cm)
+            if (strcmp(key, "threshold") == 0) {
+                // Threshold must be positive and reasonable (1cm to 30000cm / 300m)
+                if (value < 1 || value > 30000) {
+                    return false;
+                }
+            } else {
+                // Unknown parameter
+                return false;
+            }
         }
         
         return true;

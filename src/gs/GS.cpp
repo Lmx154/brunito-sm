@@ -322,9 +322,9 @@ void printHelp() {
   Serial.println("  <CMD:ENTER_TEST>         - Enter test mode");
   Serial.println("  <CMD:ENTER_RECOVERY>     - Enter recovery mode");
   Serial.println("  <CMD:QUERY>              - Query current state");
-  Serial.println("  <CMD:FIND_ME>            - Activate buzzer for locating");
-  Serial.println("  <CMD:CONTROL:param=val>  - Control actuators (e.g., servo=90)");
+  Serial.println("  <CMD:FIND_ME>            - Activate buzzer for locating");  Serial.println("  <CMD:CONTROL:param=val>  - Control actuators (e.g., servo=90)");
   Serial.println("  <CMD:NAVC_RESET_STATS>   - Reset NAVC packet statistics");
+  Serial.println("  <CMD:ALTITUDE_TEST>      - Test altitude threshold, buzzer and servo (TEST mode only)");
   Serial.println("  <CMD:LORA_RESET_STATS>   - Reset LoRa statistics counters");
   Serial.println("  <CMD:LORA_STATS>         - Show detailed LoRa statistics");
   Serial.println("Local commands:");  Serial.println("  CSV_ON                   - Enable CSV output format for telemetry");
