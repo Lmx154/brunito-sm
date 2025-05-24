@@ -156,12 +156,10 @@ void loop() {
       // If USB debugging is enabled, send detailed telemetry to USB
       if (usbDebugEnabled) {
         // Format telemetry data for USB debugging with more details
-        char debugBuffer[256]; // Increased buffer size for more data
-          // Format basic telemetry with more comprehensive data
-        snprintf(debugBuffer, sizeof(debugBuffer), 
-                "<TELEM_DEBUG:ID=%u,ALT=%ld,ACC=%.2f,%.2f,%.2f,GYRO=%.2f,%.2f,%.2f>",
-                packet.packetId,
-                packet.altitude,
+        char debugBuffer[256]; // Increased buffer size for more data        // Format basic telemetry with more comprehensive data
+        snprintf(debugBuffer, sizeof(debugBuffer),
+                "<TELEM_DEBUG:ALT=%.2f,ACC=%.2f,%.2f,%.2f,GYRO=%.2f,%.2f,%.2f>",
+                (float)packet.altitude / 100.0f, // Convert from cm to m with 2 decimal places
                 (float)packet.accelX / 1000.0f,  // Convert from mg to g
                 (float)packet.accelY / 1000.0f, 
                 (float)packet.accelZ / 1000.0f,
@@ -169,9 +167,9 @@ void loop() {
                 (float)packet.gyroY / 100.0f,
                 (float)packet.gyroZ / 100.0f);
         Serial.println(debugBuffer);
-        
-        // Only include GPS and detailed stats in every 5th packet to avoid flooding USB
-        if (packet.packetId % 5 == 0) {
+          // Only include GPS and detailed stats in some packets to avoid flooding USB
+        static uint8_t packetCounter = 0;
+        if (++packetCounter % 5 == 0) {
           // Additional debugging for GPS
           snprintf(debugBuffer, sizeof(debugBuffer),
                   "<GPS_DEBUG:LAT=%ld,LON=%ld,SAT=%u>",
@@ -239,16 +237,20 @@ void loop() {
 void reportStatus() {
   char buffer[256]; // Increased buffer for more detailed reports
   SensorPacket packet = sensorManager.getPacket(); // Get the latest packet
-
   // Consolidated USB Debug Output
   if (usbDebugEnabled) {
     char debugOutput[200]; // Buffer for consolidated debug string
+    
+    // Add debug info for altitude value before formatting
+    char altDebug[32];
+    snprintf(altDebug, sizeof(altDebug), "RAW_ALT=%ld", packet.altitude);
+    
     snprintf(debugOutput, sizeof(debugOutput),
-             "NAVC Data: TS=%lu, Lat=%ld, Lon=%ld, Alt=%ld, Sats=%u, AccX=%d, AccY=%d, AccZ=%d, GyroX=%d, GyroY=%d, GyroZ=%d, MagX=%d, MagY=%d, MagZ=%d",
+             "NAVC Data: TS=%lu, Lat=%ld, Lon=%ld, Alt=%.2f, Sats=%u, AccX=%d, AccY=%d, AccZ=%d, GyroX=%d, GyroY=%d, GyroZ=%d, MagX=%d, MagY=%d, MagZ=%d [%s]",
              packet.timestamp,
              packet.latitude,
              packet.longitude,
-             packet.altitude,
+             (float)packet.altitude / 100.0f, // Convert to meters with decimal places
              packet.satellites,
              packet.accelX,
              packet.accelY,
@@ -258,85 +260,41 @@ void reportStatus() {
              packet.gyroZ,
              packet.magX,
              packet.magY,
-             packet.magZ);
+             packet.magZ,
+             altDebug);
     Serial.println(debugOutput);
-  }
-  // Consolidated system statistics - combine multiple metrics in one line
-  snprintf(buffer, sizeof(buffer), "<NAVC_STATS:SAMPLE=%.2f,PACKETS=%lu,LOSS=%.2f%%,LOOP=%lu>", 
-           actualSampleRate,
-           packetManager.getPacketsSent(),
-           packetManager.getPacketLossRate(),
-           loopCounter);
-  Serial.println(buffer);
+    // Only include GPS and detailed stats in some packets to avoid flooding USB
+    static uint8_t packetCounter = 0;
+    if (++packetCounter % 5 == 0) {
+      // Additional debugging for GPS
+      snprintf(debugOutput, sizeof(debugOutput),
+               "<GPS_DEBUG:LAT=%ld,LON=%ld,SAT=%u>",
+               packet.latitude,
+               packet.longitude,
+               sensorManager.getGpsSatelliteCount());
+      Serial.println(debugOutput);
 
-  // Report sensor health with improved accuracy
-  
-  // Accelerometer - check for reasonable non-zero values
-  bool accelOK = (packet.accelX != 0 || packet.accelY != 0 || packet.accelZ != 0);
-  
-  // Gyroscope - some drift is normal, so being exactly zero is unlikely
-  bool gyroOK = (packet.gyroX != 0 || packet.gyroY != 0 || packet.gyroZ != 0);
-  
-  // Magnetometer - considered OK if NOT using the placeholder values we defined (10,5,50)
-  bool magOK = !(packet.magX == 10 && packet.magY == 5 && packet.magZ == 50);
-  char magBuf[30];
-  snprintf(magBuf, sizeof(magBuf), "%s(%d,%d,%d)", 
-           magOK ? "OK" : "ERR",
-           packet.magX, packet.magY, packet.magZ);
-  
-  // GPS - considered OK only if we have at least 1 satellite
-  bool gpsOK = (packet.satellites > 0);
-  
-  // GPS status includes the satellite count and whether we have a valid fix
-  // A valid fix is indicated by latitude/longitude not being the placeholder values (1,1 or 10,10)
-  bool hasValidFix = (packet.latitude != 1 && packet.longitude != 1 && 
-                     packet.latitude != 10 && packet.longitude != 10);
-                     
-  char gpsBuf[50];
-  snprintf(gpsBuf, sizeof(gpsBuf), "%s(%u,%s)", 
-           gpsOK ? "OK" : "ERR",
-           packet.satellites,
-           hasValidFix ? "FIX" : "NO_FIX");
-
-  // Barometer - check if producing non-zero altitude
-  bool baroOK = (packet.altitude != 0);
-  
-  // RTC - check for reasonable date/time values
-  bool rtcOK = (packet.year > 0 && packet.year <= 99 && 
-               packet.month >= 1 && packet.month <= 12 && 
-               packet.day >= 1 && packet.day <= 31);
-               
-  char rtcBuf[30];
-  snprintf(rtcBuf, sizeof(rtcBuf), "%s(20%02d-%02d-%02d)",
-           rtcOK ? "OK" : "ERR",
-           packet.year, packet.month, packet.day);
-  // Generate comprehensive sensor status report with less verbose format
-  snprintf(buffer, sizeof(buffer),
-          "<SENSOR_STATUS:AC=%s,GY=%s,MG=%s,GPS=%s,BA=%s,RTC=%s>",
-          accelOK ? "OK" : "ERR",
-          gyroOK ? "OK" : "ERR",
-          magBuf,
-          gpsBuf,
-          baroOK ? "OK" : "ERR",
-          rtcBuf);
-  Serial.println(buffer);
-    // Add calibration reminder if magnetometer or GPS show issues, but at lower frequency
-  static unsigned long lastCalibrationReminder = 0;
-  if ((!magOK || !gpsOK) && (millis() - lastCalibrationReminder > 60000)) { // Reduced to once per minute
-    char alertBuf[128];
-    if (!magOK && !gpsOK) {
-      snprintf(alertBuf, sizeof(alertBuf), "<ALERT:CALIBRATION_NEEDED:MAG=FIGURE_8_MOTION,GPS=CLEAR_SKY_VIEW>");
-    } else if (!magOK) {
-      snprintf(alertBuf, sizeof(alertBuf), "<ALERT:MAG_CALIBRATION_NEEDED:MOVE_IN_FIGURE_8_PATTERN>");
-    } else {
-      snprintf(alertBuf, sizeof(alertBuf), "<ALERT:GPS_SIGNAL_WEAK:ENSURE_CLEAR_SKY_VIEW>");
+      // Additional debugging for packet transmission
+      snprintf(debugOutput, sizeof(debugOutput),
+               "<UART_DEBUG:QUEUE=%u,SENT=%lu,DROPPED=%lu,LOSS=%.2f%%%%>",
+               packetManager.getQueueSize(),
+               packetManager.getPacketsSent(),
+               packetManager.getPacketsDropped(),
+               packetManager.getPacketLossRate());
+      Serial.println(debugOutput);
     }
-    Serial.println(alertBuf);
-    lastCalibrationReminder = millis();
   }
-
-  // Reset counter
-  loopCounter = 0;
+  
+  // Only send telemetry over UART if explicitly enabled
+  if (telemetryEnabled) {
+    // Enqueue the packet for transmission
+    if (packetManager.enqueuePacket(packet)) {
+      sampleCount++;
+    }
+    
+    // Send all queued packets
+    packetManager.sendQueuedPackets();
+  }
 }
 
 void processFcCommands() {

@@ -67,23 +67,44 @@ unsigned long lastBandwidthReport = 0; // For bandwidth usage reporting
  */
 String formatTelem(const SensorPacket& packet, bool gpsOnly) {
   char buffer[250];
-    if (gpsOnly) {
-    // RECOVERY mode - GPS only telemetry with timestamp, satellite count, and temperature
-    snprintf(buffer, sizeof(buffer), "<T:%lu,%ld,%ld,%ld,%u,%d>", // Shortened tag for efficiency
-             packet.timestamp,
+  
+  // Format altitude as meters with 2 decimal places (moved outside conditionals)
+  float altitudeMeters = packet.altitude / 100.0f;
+  char altStr[10]; // Buffer for formatted altitude
+  snprintf(altStr, sizeof(altStr), "%.2f", altitudeMeters);
+  
+  // Debug output to see what altitude values we're getting
+  static unsigned long lastAltitudeDebug = 0;
+  if (millis() - lastAltitudeDebug > 5000) { // Every 5 seconds
+    char debugBuf[64];
+    snprintf(debugBuf, sizeof(debugBuf), "<DEBUG:RAW_ALTITUDE=%ld,CONVERTED=%s>", 
+             packet.altitude, altStr);
+    Serial.println(debugBuf);
+    lastAltitudeDebug = millis();
+  }
+  
+  // Format date and time as MM/DD/YYYY,HH:MM:SS
+  char datetime[22]; // Enough space for MM/DD/YYYY,HH:MM:SS
+  snprintf(datetime, sizeof(datetime), "%02u/%02u/20%02u,%02u:%02u:%02u", 
+           packet.month, packet.day, packet.year, 
+           packet.hour, packet.minute, packet.second);
+           
+  if (gpsOnly) {
+    // RECOVERY mode - GPS only telemetry with formatted date/time, satellite count, and temperature
+    snprintf(buffer, sizeof(buffer), "<%s,%ld,%ld,%s,%u,%d>", // No T: prefix as requested by user
+             datetime,
              packet.latitude, 
              packet.longitude, 
-             packet.altitude,
+             altStr, // Using formatted altitude with decimal places
              packet.satellites,
              packet.temperature);
   } else {
-    // ARMED mode - More compact format with shorter tag and optimized spacing
-    // Use T instead of TELEM to reduce packet size (saves 5 bytes per packet)
+    // ARMED mode - More compact format with no tag prefix as requested by user
+    // Removed packetId and T: prefix as requested by user 
     snprintf(buffer, sizeof(buffer), 
-             "<T:%u,%lu,%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%d>",
-             packet.packetId,
-             packet.timestamp,
-             packet.altitude,
+             "<%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%d>",
+             datetime,
+             altStr, // Using formatted altitude with decimal places
              packet.accelX, packet.accelY, packet.accelZ,
              packet.gyroX, packet.gyroY, packet.gyroZ,
              packet.magX, packet.magY, packet.magZ,
@@ -672,13 +693,11 @@ void uartTask() {
           }
         }
         break;
-        
-      case STATE_TEST:
+          case STATE_TEST:
         // In TEST state, report sensor values for testing
         char testBuffer[128];
         snprintf(testBuffer, sizeof(testBuffer), 
-                "<TEST:PKT_ID:%u,ALT:%.2fm,ACCEL:%.2f,%.2f,%.2f>",
-                packet.packetId,
+                "<TEST:ALT:%.2fm,ACCEL:%.2f,%.2f,%.2f>",
                 (float)packet.altitude / 100.0f,
                 (float)packet.accelX / 1000.0f,
                 (float)packet.accelY / 1000.0f,

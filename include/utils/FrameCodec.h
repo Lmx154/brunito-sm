@@ -60,23 +60,30 @@ public:
                 snprintf(buffer, bufferSize, "<CMD_ACK:ERR>");
             }
         }
-    }
-      // Format a telemetry message in ARMED state
+    }    // Format a telemetry message in ARMED state
     static void formatArmedTelemetry(char* buffer, size_t bufferSize, 
-                                   uint16_t pkId, uint32_t timestamp,
+                                   uint16_t pkId, uint8_t year, uint8_t month, uint8_t day, 
+                                   uint8_t hour, uint8_t minute, uint8_t second,
                                    int32_t alt, int16_t accelX, int16_t accelY, int16_t accelZ,
                                    int16_t gyroX, int16_t gyroY, int16_t gyroZ,
                                    int16_t magX, int16_t magY, int16_t magZ,
                                    int32_t lat, int32_t lon, uint8_t sats, int16_t temp) {
-        snprintf(buffer, bufferSize, "<TELEM:%u,%lu,%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%d>",
-                pkId, timestamp, alt, accelX, accelY, accelZ, gyroX, gyroY, gyroZ,
+        char datetime[22]; // MM/DD/YYYY,HH:MM:SS
+        snprintf(datetime, sizeof(datetime), "%02u/%02u/20%02u,%02u:%02u:%02u", 
+                 month, day, year, hour, minute, second);        snprintf(buffer, bufferSize, "<%s,%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%d>",
+                datetime, alt, accelX, accelY, accelZ, gyroX, gyroY, gyroZ,
                 magX, magY, magZ, lat, lon, sats, temp);
     }
       // Format a telemetry message in RECOVERY state (GPS only)
     static void formatRecoveryTelemetry(char* buffer, size_t bufferSize,
-                                     uint32_t timestamp, int32_t lat, int32_t lon, int32_t alt, 
+                                     uint8_t year, uint8_t month, uint8_t day, 
+                                     uint8_t hour, uint8_t minute, uint8_t second,
+                                     int32_t lat, int32_t lon, int32_t alt, 
                                      uint8_t sats, int16_t temp) {
-        snprintf(buffer, bufferSize, "<TELEM:%lu,%ld,%ld,%ld,%u,%d>", timestamp, lat, lon, alt, sats, temp);
+        char datetime[22]; // MM/DD/YYYY,HH:MM:SS
+        snprintf(datetime, sizeof(datetime), "%02u/%02u/20%02u,%02u:%02u:%02u", 
+                 month, day, year, hour, minute, second);
+        snprintf(buffer, bufferSize, "<%s,%ld,%ld,%ld,%u,%d>", datetime, lat, lon, alt, sats, temp);
     }
       // Calculate CRC16 for binary packet
     static uint16_t calculatePacketCRC(const uint8_t* packet, size_t length) {

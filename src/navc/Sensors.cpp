@@ -773,18 +773,10 @@ bool SensorManager::updateWithDiagnostics() {
                 magData[1] = 0;
                 magData[2] = 1; // Small non-zero value to avoid division by zero
                 Serial.println("<DEBUG:DIAGNOSTICS_USING_NEUTRAL_MAG_VALUES>");
-            }
-        }
+            }        }
         
-        // Read barometer data
-        if (!isnan(baro.readTemperature()) && !isnan(baro.readPressure())) {
-            temperature = baro.readTemperature();
-            pressure = baro.readPressure();
-            altitude = baro.readAltitude(1013.25); // Standard pressure at sea level
-        } else {
-            Serial.println("<DEBUG:BARO_READ_FAILED>");
-            success = false;
-        }
+        // Read barometer data using the dedicated function
+        readBarometer();
         
         updateTime();
     }
@@ -1229,14 +1221,67 @@ void SensorManager::readMagnetometer() {
 }
 
 void SensorManager::readBarometer() {
-    // Read temperature in °C
-    temperature = baro.readTemperature();
+    // Read all values once and check validity
+    float tempReading = baro.readTemperature();
+    float pressureReading = baro.readPressure();
+    float currentAltitude = baro.readAltitude(1013.25); // Standard pressure at sea level
     
-    // Read pressure in Pa
-    pressure = baro.readPressure();
+    // Debug output to see raw barometer readings
+    static unsigned long lastBaroDebug = 0;
+    if (millis() - lastBaroDebug > 5000) { // Every 5 seconds
+        Serial.print("<DEBUG:BARO_RAW_VALUES:TEMP=");
+        Serial.print(tempReading);
+        Serial.print(",PRESSURE=");
+        Serial.print(pressureReading);
+        Serial.print(",ALT=");
+        Serial.print(currentAltitude);
+        Serial.println(">");
+        lastBaroDebug = millis();
+    }
     
-    // Calculate altitude in meters
-    altitude = baro.readAltitude();
+    if (!isnan(tempReading) && !isnan(pressureReading) && !isnan(currentAltitude)) {
+        // Store valid readings
+        temperature = tempReading;
+        pressure = pressureReading;
+        
+        // Check if this is the first valid reading to set the reference point
+        static bool referenceAltitudeSet = false;
+        static float referenceAltitude = 0.0f;
+        
+        if (!referenceAltitudeSet) {
+            referenceAltitude = currentAltitude;
+            referenceAltitudeSet = true;
+            Serial.print("<DEBUG:ALTITUDE_REFERENCE_POINT_SET:REF=");
+            Serial.print(referenceAltitude);
+            Serial.println(">");
+        }
+        
+        // Calculate relative altitude (difference from reference point)
+        altitude = currentAltitude - referenceAltitude;
+        
+        // Debug output for altitude calculation
+        static unsigned long lastAltCalcDebug = 0;
+        if (millis() - lastAltCalcDebug > 10000) { // Every 10 seconds
+            Serial.print("<DEBUG:ALTITUDE_CALC:CURRENT=");
+            Serial.print(currentAltitude);
+            Serial.print(",REF=");
+            Serial.print(referenceAltitude);
+            Serial.print(",RELATIVE=");
+            Serial.print(altitude);
+            Serial.println(">");
+            lastAltCalcDebug = millis();
+        }
+    } else {
+        Serial.print("<DEBUG:BARO_READ_FAILED:TEMP_VALID=");
+        Serial.print(!isnan(tempReading));
+        Serial.print(",PRESSURE_VALID=");
+        Serial.print(!isnan(pressureReading));
+        Serial.print(",ALT_VALID=");
+        Serial.print(!isnan(currentAltitude));
+        Serial.println(">");
+        // Note: Don't set success=false here since this function doesn't return bool
+        // The calling function (updateWithDiagnostics) should handle this
+    }
 }
 
 void SensorManager::updateTime() {
@@ -1268,14 +1313,29 @@ void SensorManager::updateTime() {
 void SensorManager::processSensorData() {
     // Prepare packet data
     currentPacket.packetId = packetCounter++;
+    
+    // Update timestamp to hold milliseconds since boot 
+    // (actual date/time formatting will be done in FC when sending)
     currentPacket.timestamp = millis();
     
     // Scale and convert all values to integers with appropriate scaling
+      // Temperature rounded to nearest whole degree (not centi-degrees anymore)
+    currentPacket.temperature = static_cast<int16_t>(round(temperature));
+      // Altitude in cm (meters * 100) - stored in cm but will be displayed as m with 2 decimal places
     
-    // Temperature in centi-degrees (C * 100)
-    currentPacket.temperature = static_cast<int16_t>(temperature * 100.0f);
+    // Debug: Show altitude value right before packet assignment
+    static unsigned long lastAltPacketDebug = 0;
+    if (millis() - lastAltPacketDebug > 5000) { // Every 5 seconds
+        Serial.print("<DEBUG:PACKET_ALTITUDE_ASSIGNMENT:ALTITUDE_VAR=");
+        Serial.print(altitude);
+        Serial.print(",MULTIPLIED=");
+        Serial.print(altitude * 100.0f);
+        Serial.print(",FINAL_INT=");
+        Serial.print(static_cast<int32_t>(altitude * 100.0f));
+        Serial.println(">");
+        lastAltPacketDebug = millis();
+    }
     
-    // Altitude in cm (meters * 100)
     currentPacket.altitude = static_cast<int32_t>(altitude * 100.0f);
     
     // Acceleration in mg (milli-g) (1g = 9.80665 m/s^2)

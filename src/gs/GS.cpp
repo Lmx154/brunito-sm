@@ -75,29 +75,9 @@ void handleLoraPacket(LoraPacket* packet) {
     } else if (rssi < -100) {
         rateIndicator = "THROTTLED_10HZ";
     }
-    
-    // DEBUG:TELEM_RECEIVED messages removed to reduce log verbosity
-      // Track packet IDs to detect lost packets
-    if (msgBuffer[0] == '<' && (strncmp(msgBuffer, "<TELEM:", 7) == 0 || strncmp(msgBuffer, "<T:", 3) == 0)) {
-      // Parse packet ID from telemetry data - handle both formats (TELEM and T)
-      char* payload;
-      if (strncmp(msgBuffer, "<TELEM:", 7) == 0) {
-        payload = msgBuffer + 7; // Skip "<TELEM:"
-      } else {
-        payload = msgBuffer + 3; // Skip "<T:"
-      }
-      
-      char* firstComma = strchr(payload, ',');
-      
-      if (firstComma != NULL) {
-        // Extract first value as packetID
-        *firstComma = '\0'; // Temporarily terminate string at comma
-        uint16_t currentPacketId = atoi(payload);
-        *firstComma = ','; // Restore the comma
-        
-        // We're no longer tracking packet loss but still process the ID for potential future use
-      }
-    }
+      // DEBUG:TELEM_RECEIVED messages removed to reduce log verbosity
+    // No longer tracking packet IDs - telemetry format no longer includes packet ID
+    // First value is now the datetime string
       // Display the raw telemetry directly without additional tags
     Serial.println(msgBuffer);
   }
