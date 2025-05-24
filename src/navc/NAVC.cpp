@@ -154,18 +154,24 @@ void loop() {
       );
       
       // If USB debugging is enabled, send detailed telemetry to USB
-      if (usbDebugEnabled) {
-        // Format telemetry data for USB debugging with more details
-        char debugBuffer[256]; // Increased buffer size for more data        // Format basic telemetry with more comprehensive data
+      if (usbDebugEnabled) {        // Format telemetry data for USB debugging with more details
+        char debugBuffer[256]; // Increased buffer size for more data
+        
+        // Debug the packet altitude value before formatting
+        Serial.print("<DEBUG:TELEM_DEBUG_PACKET_ALT:");
+        Serial.print(packet.altitude);
+        Serial.println(">");
+          // Format basic telemetry with more comprehensive data
+        float altMeters = (float)packet.altitude / 100.0f;
         snprintf(debugBuffer, sizeof(debugBuffer),
-                "<TELEM_DEBUG:ALT=%.2f,ACC=%.2f,%.2f,%.2f,GYRO=%.2f,%.2f,%.2f>",
-                (float)packet.altitude / 100.0f, // Convert from cm to m with 2 decimal places
-                (float)packet.accelX / 1000.0f,  // Convert from mg to g
-                (float)packet.accelY / 1000.0f, 
-                (float)packet.accelZ / 1000.0f,
-                (float)packet.gyroX / 100.0f,    // Convert from 0.01dps to dps
-                (float)packet.gyroY / 100.0f,
-                (float)packet.gyroZ / 100.0f);
+                "<TELEM_DEBUG:ALT=%d.%02d,ACC=%d.%03d,%d.%03d,%d.%03d,GYRO=%d.%02d,%d.%02d,%d.%02d>",
+                (int)altMeters, (int)((altMeters - (int)altMeters) * 100), // Alt in meters with 2 decimal places
+                (int)(packet.accelX / 1000), abs(packet.accelX % 1000),  // Accel in g with 3 decimal places
+                (int)(packet.accelY / 1000), abs(packet.accelY % 1000), 
+                (int)(packet.accelZ / 1000), abs(packet.accelZ % 1000),
+                (int)(packet.gyroX / 100), abs(packet.gyroX % 100),    // Gyro in dps with 2 decimal places
+                (int)(packet.gyroY / 100), abs(packet.gyroY % 100),
+                (int)(packet.gyroZ / 100), abs(packet.gyroZ % 100));
         Serial.println(debugBuffer);
           // Only include GPS and detailed stats in some packets to avoid flooding USB
         static uint8_t packetCounter = 0;
@@ -239,18 +245,23 @@ void reportStatus() {
   SensorPacket packet = sensorManager.getPacket(); // Get the latest packet
   // Consolidated USB Debug Output
   if (usbDebugEnabled) {
-    char debugOutput[200]; // Buffer for consolidated debug string
+    char debugOutput[200]; // Buffer for consolidated debug string    // Add debug info for altitude value before formatting
+    char altDebug[64];
+    float altMeters = (float)packet.altitude / 100.0f;
+    snprintf(altDebug, sizeof(altDebug), "RAW_ALT=%ld,FORMATTED=%d.%02d", packet.altitude, (int)altMeters, (int)((altMeters - (int)altMeters) * 100));
     
-    // Add debug info for altitude value before formatting
-    char altDebug[32];
-    snprintf(altDebug, sizeof(altDebug), "RAW_ALT=%ld", packet.altitude);
-    
-    snprintf(debugOutput, sizeof(debugOutput),
-             "NAVC Data: TS=%lu, Lat=%ld, Lon=%ld, Alt=%.2f, Sats=%u, AccX=%d, AccY=%d, AccZ=%d, GyroX=%d, GyroY=%d, GyroZ=%d, MagX=%d, MagY=%d, MagZ=%d [%s]",
+    // Additional debug to see what's happening with altitude formatting
+    Serial.print("<DEBUG:DISPLAY_FORMATTING:RAW=");
+    Serial.print(packet.altitude);
+    Serial.print(",FLOAT_CONVERSION=");
+    Serial.print((float)packet.altitude / 100.0f);
+    Serial.println(">");
+      snprintf(debugOutput, sizeof(debugOutput),
+             "NAVC Data: TS=%lu, Lat=%ld, Lon=%ld, Alt=%d.%02d, Sats=%u, AccX=%d, AccY=%d, AccZ=%d, GyroX=%d, GyroY=%d, GyroZ=%d, MagX=%d, MagY=%d, MagZ=%d [%s]",
              packet.timestamp,
              packet.latitude,
              packet.longitude,
-             (float)packet.altitude / 100.0f, // Convert to meters with decimal places
+             (int)altMeters, (int)((altMeters - (int)altMeters) * 100), // Convert to meters with decimal places using integer formatting
              packet.satellites,
              packet.accelX,
              packet.accelY,
