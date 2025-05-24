@@ -146,47 +146,11 @@ void loop() {
     if (sensorManager.isPacketReady()) {
       // Get the latest packet
       SensorPacket packet = sensorManager.getPacket();
-      
-      // Calculate and set CRC
+        // Calculate and set CRC
       packet.crc16 = calculateCrc16(
           (const uint8_t*)&packet, 
           sizeof(SensorPacket) - sizeof(uint16_t)
       );
-        // If USB debugging is enabled, send detailed telemetry to USB
-      if (usbDebugEnabled) {
-        // Format telemetry data for USB debugging with more details
-        char debugBuffer[256];
-        float altMeters = (float)packet.altitude / 100.0f;
-        snprintf(debugBuffer, sizeof(debugBuffer),                "<TELEM_DEBUG:ALT=%s%d.%02d,ACC=%d.%03d,%d.%03d,%d.%03d,GYRO=%d.%02d,%d.%02d,%d.%02d>",
-                (altMeters < 0) ? "-" : "", abs((int)altMeters), (int)(fabs(altMeters - (int)altMeters) * 100), // Alt in meters with 2 decimal places
-                (int)(packet.accelX / 1000), abs(packet.accelX % 1000),  // Accel in g with 3 decimal places
-                (int)(packet.accelY / 1000), abs(packet.accelY % 1000), 
-                (int)(packet.accelZ / 1000), abs(packet.accelZ % 1000),
-                (int)(packet.gyroX / 100), abs(packet.gyroX % 100),    // Gyro in dps with 2 decimal places
-                (int)(packet.gyroY / 100), abs(packet.gyroY % 100),
-                (int)(packet.gyroZ / 100), abs(packet.gyroZ % 100));
-        Serial.println(debugBuffer);
-          // Only include GPS and detailed stats in some packets to avoid flooding USB
-        static uint8_t packetCounter = 0;
-        if (++packetCounter % 5 == 0) {
-          // Additional debugging for GPS
-          snprintf(debugBuffer, sizeof(debugBuffer),
-                  "<GPS_DEBUG:LAT=%ld,LON=%ld,SAT=%u>",
-                  packet.latitude,
-                  packet.longitude,
-                  sensorManager.getGpsSatelliteCount());
-          Serial.println(debugBuffer);
-          
-          // Additional debugging for packet transmission
-          snprintf(debugBuffer, sizeof(debugBuffer),
-                  "<UART_DEBUG:QUEUE=%u,SENT=%lu,DROPPED=%lu,LOSS=%.2f%%%%>",
-                  packetManager.getQueueSize(),
-                  packetManager.getPacketsSent(),
-                  packetManager.getPacketsDropped(),
-                  packetManager.getPacketLossRate());
-          Serial.println(debugBuffer);
-        }
-      }
       
       // Only send telemetry over UART if explicitly enabled
       if (telemetryEnabled) {
@@ -234,75 +198,8 @@ void loop() {
 }
 
 void reportStatus() {
-  char buffer[256]; // Increased buffer for more detailed reports
-  SensorPacket packet = sensorManager.getPacket(); // Get the latest packet
-  // Consolidated USB Debug Output
-  if (usbDebugEnabled) {
-    char debugOutput[200]; // Buffer for consolidated debug string    // Add debug info for altitude value before formatting
-    char altDebug[64];
-    float altMeters = (float)packet.altitude / 100.0f;
-    snprintf(altDebug, sizeof(altDebug), "RAW_ALT=%ld,FORMATTED=%d.%02d", packet.altitude, (int)altMeters, (int)((altMeters - (int)altMeters) * 100));
-    
-    // Additional debug to see what's happening with altitude formatting
-    Serial.print("<DEBUG:DISPLAY_FORMATTING:RAW=");
-    Serial.print(packet.altitude);
-    Serial.print(",FLOAT_CONVERSION=");
-    Serial.print((float)packet.altitude / 100.0f);
-    Serial.println(">");    // Fixed altitude formatting for negative values
-    int altWhole = (int)altMeters;
-    int altFrac = (int)(fabs(altMeters - altWhole) * 100);
-    
-    snprintf(debugOutput, sizeof(debugOutput),
-             "NAVC Data: TS=%lu, Lat=%ld, Lon=%ld, Alt=%s%d.%02d, Sats=%u, AccX=%d, AccY=%d, AccZ=%d, GyroX=%d, GyroY=%d, GyroZ=%d, MagX=%d, MagY=%d, MagZ=%d [%s]",
-             packet.timestamp,
-             packet.latitude,
-             packet.longitude,
-             (altMeters < 0) ? "-" : "",
-             abs(altWhole), altFrac, // Fixed negative altitude display
-             packet.satellites,
-             packet.accelX,
-             packet.accelY,
-             packet.accelZ,
-             packet.gyroX,
-             packet.gyroY,
-             packet.gyroZ,
-             packet.magX,
-             packet.magY,
-             packet.magZ,
-             altDebug);
-    Serial.println(debugOutput);
-    // Only include GPS and detailed stats in some packets to avoid flooding USB
-    static uint8_t packetCounter = 0;
-    if (++packetCounter % 5 == 0) {
-      // Additional debugging for GPS
-      snprintf(debugOutput, sizeof(debugOutput),
-               "<GPS_DEBUG:LAT=%ld,LON=%ld,SAT=%u>",
-               packet.latitude,
-               packet.longitude,
-               sensorManager.getGpsSatelliteCount());
-      Serial.println(debugOutput);
-
-      // Additional debugging for packet transmission
-      snprintf(debugOutput, sizeof(debugOutput),
-               "<UART_DEBUG:QUEUE=%u,SENT=%lu,DROPPED=%lu,LOSS=%.2f%%%%>",
-               packetManager.getQueueSize(),
-               packetManager.getPacketsSent(),
-               packetManager.getPacketsDropped(),
-               packetManager.getPacketLossRate());
-      Serial.println(debugOutput);
-    }
-  }
-  
-  // Only send telemetry over UART if explicitly enabled
-  if (telemetryEnabled) {
-    // Enqueue the packet for transmission
-    if (packetManager.enqueuePacket(packet)) {
-      sampleCount++;
-    }
-    
-    // Send all queued packets
-    packetManager.sendQueuedPackets();
-  }
+  // Status reporting function - maintains loop timing and statistics
+  // Debug output is handled in the main loop, not here
 }
 
 void processFcCommands() {
