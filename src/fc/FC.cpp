@@ -67,11 +67,15 @@ unsigned long lastBandwidthReport = 0; // For bandwidth usage reporting
  */
 String formatTelem(const SensorPacket& packet, bool gpsOnly) {
   char buffer[250];
-  
-  // Format altitude as meters with 2 decimal places (moved outside conditionals)
+    // Format altitude as meters with 2 decimal places using integer formatting
   float altitudeMeters = packet.altitude / 100.0f;
   char altStr[10]; // Buffer for formatted altitude
-  snprintf(altStr, sizeof(altStr), "%.2f", altitudeMeters);
+  
+  // Use integer-based formatting to handle negative values correctly
+  int altWhole = (int)altitudeMeters;
+  int altFrac = (int)(fabs(altitudeMeters - altWhole) * 100);
+  snprintf(altStr, sizeof(altStr), "%s%d.%02d", 
+           (altitudeMeters < 0) ? "-" : "", abs(altWhole), altFrac);
   
   // Debug output to see what altitude values we're getting
   static unsigned long lastAltitudeDebug = 0;

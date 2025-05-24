@@ -152,20 +152,13 @@ void loop() {
           (const uint8_t*)&packet, 
           sizeof(SensorPacket) - sizeof(uint16_t)
       );
-      
-      // If USB debugging is enabled, send detailed telemetry to USB
-      if (usbDebugEnabled) {        // Format telemetry data for USB debugging with more details
-        char debugBuffer[256]; // Increased buffer size for more data
-        
-        // Debug the packet altitude value before formatting
-        Serial.print("<DEBUG:TELEM_DEBUG_PACKET_ALT:");
-        Serial.print(packet.altitude);
-        Serial.println(">");
-          // Format basic telemetry with more comprehensive data
+        // If USB debugging is enabled, send detailed telemetry to USB
+      if (usbDebugEnabled) {
+        // Format telemetry data for USB debugging with more details
+        char debugBuffer[256];
         float altMeters = (float)packet.altitude / 100.0f;
-        snprintf(debugBuffer, sizeof(debugBuffer),
-                "<TELEM_DEBUG:ALT=%d.%02d,ACC=%d.%03d,%d.%03d,%d.%03d,GYRO=%d.%02d,%d.%02d,%d.%02d>",
-                (int)altMeters, (int)((altMeters - (int)altMeters) * 100), // Alt in meters with 2 decimal places
+        snprintf(debugBuffer, sizeof(debugBuffer),                "<TELEM_DEBUG:ALT=%s%d.%02d,ACC=%d.%03d,%d.%03d,%d.%03d,GYRO=%d.%02d,%d.%02d,%d.%02d>",
+                (altMeters < 0) ? "-" : "", abs((int)altMeters), (int)(fabs(altMeters - (int)altMeters) * 100), // Alt in meters with 2 decimal places
                 (int)(packet.accelX / 1000), abs(packet.accelX % 1000),  // Accel in g with 3 decimal places
                 (int)(packet.accelY / 1000), abs(packet.accelY % 1000), 
                 (int)(packet.accelZ / 1000), abs(packet.accelZ % 1000),
@@ -255,13 +248,17 @@ void reportStatus() {
     Serial.print(packet.altitude);
     Serial.print(",FLOAT_CONVERSION=");
     Serial.print((float)packet.altitude / 100.0f);
-    Serial.println(">");
-      snprintf(debugOutput, sizeof(debugOutput),
-             "NAVC Data: TS=%lu, Lat=%ld, Lon=%ld, Alt=%d.%02d, Sats=%u, AccX=%d, AccY=%d, AccZ=%d, GyroX=%d, GyroY=%d, GyroZ=%d, MagX=%d, MagY=%d, MagZ=%d [%s]",
+    Serial.println(">");    // Fixed altitude formatting for negative values
+    int altWhole = (int)altMeters;
+    int altFrac = (int)(fabs(altMeters - altWhole) * 100);
+    
+    snprintf(debugOutput, sizeof(debugOutput),
+             "NAVC Data: TS=%lu, Lat=%ld, Lon=%ld, Alt=%s%d.%02d, Sats=%u, AccX=%d, AccY=%d, AccZ=%d, GyroX=%d, GyroY=%d, GyroZ=%d, MagX=%d, MagY=%d, MagZ=%d [%s]",
              packet.timestamp,
              packet.latitude,
              packet.longitude,
-             (int)altMeters, (int)((altMeters - (int)altMeters) * 100), // Convert to meters with decimal places using integer formatting
+             (altMeters < 0) ? "-" : "",
+             abs(altWhole), altFrac, // Fixed negative altitude display
              packet.satellites,
              packet.accelX,
              packet.accelY,
