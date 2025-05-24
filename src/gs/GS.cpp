@@ -31,125 +31,7 @@ const unsigned long BANDWIDTH_CHECK_INTERVAL = 60000; // Check bandwidth every 6
 
 // Removed packet loss tracking variables as they're causing more problems than they solve
 
-// CSV output control (disabled by default now)
-bool outputCsvFormat = false;
-bool csvHeaderPrinted = false;
-
-// Helper function to count commas in a string
-int countCommas(const char* str) {
-  int count = 0;
-  while (*str) {
-    if (*str == ',') count++;
-    str++;
-  }
-  return count;
-}
-
-/**
- * Parse telemetry frame and output as CSV
- * 
- * @param frame The telemetry frame string
- */
-void parseTelemToCsv(const char* frame) {  // Verify it's a TELEM frame (either full or shortened format)
-  bool isTelemFrame = false;
-  int prefixLength = 0;
-  
-  if (strncmp(frame, "<TELEM:", 7) == 0) {
-    isTelemFrame = true;
-    prefixLength = 7; // Skip "<TELEM:"
-  } else if (strncmp(frame, "<T:", 3) == 0) {
-    isTelemFrame = true;
-    prefixLength = 3; // Skip "<T:"
-  }
-  
-  if (!isTelemFrame) {
-    Serial.println("<DEBUG:NOT_TELEM_FRAME>");
-    return;
-  }
-  
-  // Extract payload between : and >
-  char payload[LORA_MAX_PACKET_SIZE];
-  size_t i = prefixLength;  // Skip prefix
-  size_t p = 0;
-  
-  while (frame[i] != '>' && frame[i] != '\0' && p < sizeof(payload) - 1) {
-    payload[p++] = frame[i++];
-  }
-  payload[p] = '\0';  // Null terminate
-  // Count commas to determine format (ARMED or RECOVERY)
-  int commaCount = 0;
-  for (size_t j = 0; j < p; j++) {
-    if (payload[j] == ',') commaCount++;
-  }  // Print CSV header if needed
-  if (!csvHeaderPrinted) {
-    if (commaCount == 15) {  // ARMED format (16 values - now includes sats and temperature)
-      Serial.println("pkID,timestamp_ms,alt_m,accel_x_g,accel_y_g,accel_z_g,"
-                    "gyro_x_dps,gyro_y_dps,gyro_z_dps,"
-                    "mag_x_uT,mag_y_uT,mag_z_uT,lat_deg,lon_deg,sats,temp_c");
-    } else if (commaCount == 5) {  // RECOVERY format (6 values - now includes sats and temperature)
-      Serial.println("timestamp_ms,lat_deg,lon_deg,alt_m,sats,temp_c");
-    }
-    csvHeaderPrinted = true;
-  }
-    // Parse values and apply scaling based on format
-  if (commaCount == 15) {  // ARMED format
-    // Parse all 16 values
-    long values[16];
-    int valueIndex = 0;
-    char* token = strtok(payload, ",");
-    
-    while (token != NULL && valueIndex < 16) {
-      values[valueIndex++] = atol(token);
-      token = strtok(NULL, ",");
-    }
-    
-    // Apply scaling and print CSV line
-    if (valueIndex == 16) {
-      // Values: pkID, timestamp, alt, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, mag_x, mag_y, mag_z, lat, lon, sats, temp
-      Serial.print(values[0]); Serial.print(",");                   // pkID (raw)
-      Serial.print(values[1]); Serial.print(",");                   // timestamp_ms (raw)
-      Serial.print(values[2] / 100.0f, 2); Serial.print(",");       // alt_m (cm → m)
-      Serial.print(values[3] / 1000.0f, 3); Serial.print(",");      // accel_x_g (mg → g)
-      Serial.print(values[4] / 1000.0f, 3); Serial.print(",");      // accel_y_g (mg → g)
-      Serial.print(values[5] / 1000.0f, 3); Serial.print(",");      // accel_z_g (mg → g)
-      Serial.print(values[6] / 100.0f, 2); Serial.print(",");       // gyro_x_dps (0.01 dps → dps)
-      Serial.print(values[7] / 100.0f, 2); Serial.print(",");       // gyro_y_dps (0.01 dps → dps)
-      Serial.print(values[8] / 100.0f, 2); Serial.print(",");       // gyro_z_dps (0.01 dps → dps)
-      Serial.print(values[9] / 10.0f, 1); Serial.print(",");        // mag_x_uT (0.1 μT → μT)
-      Serial.print(values[10] / 10.0f, 1); Serial.print(",");       // mag_y_uT (0.1 μT → μT)
-      Serial.print(values[11] / 10.0f, 1); Serial.print(",");       // mag_z_uT (0.1 μT → μT)
-      Serial.print(values[12] / 10000000.0f, 7); Serial.print(","); // lat_deg (1e7 → degrees)
-      Serial.print(values[13] / 10000000.0f, 7); Serial.print(","); // lon_deg (1e7 → degrees)
-      Serial.print(values[14]); Serial.print(",");                  // sats (raw)
-      Serial.print(values[15] / 100.0f, 2);                         // temp_c (centi-degrees → degrees)
-      Serial.println();
-    }
-  }
-  
-  else if (commaCount == 5) {  // RECOVERY format
-    // Parse all 6 values
-    long values[6];
-    int valueIndex = 0;
-    char* token = strtok(payload, ",");
-    
-    while (token != NULL && valueIndex < 6) {
-      values[valueIndex++] = atol(token);
-      token = strtok(NULL, ",");
-    }
-    
-    // Apply scaling and print CSV line
-    if (valueIndex == 6) {
-      // Values: timestamp, lat, lon, alt, sats, temp
-      Serial.print(values[0]); Serial.print(",");                  // timestamp_ms (raw)
-      Serial.print(values[1] / 10000000.0f, 7); Serial.print(","); // lat_deg (1e7 → degrees)
-      Serial.print(values[2] / 10000000.0f, 7); Serial.print(","); // lon_deg (1e7 → degrees)
-      Serial.print(values[3] / 100.0f, 2); Serial.print(",");      // alt_m (cm → m)
-      Serial.print(values[4]); Serial.print(",");                  // sats (raw)
-      Serial.print(values[5] / 100.0f, 2);                         // temp_c (centi-degrees → degrees)
-      Serial.println();
-    }
-  }
-}
+// Removed CSV output functionality as requested
 
 // Function to handle received LoRa packets
 void handleLoraPacket(LoraPacket* packet) {
@@ -216,14 +98,8 @@ void handleLoraPacket(LoraPacket* packet) {
         // We're no longer tracking packet loss but still process the ID for potential future use
       }
     }
-    
-    // Display the raw telemetry directly without additional tags
+      // Display the raw telemetry directly without additional tags
     Serial.println(msgBuffer);
-    
-    // If CSV output is enabled, also parse and output as CSV
-    if (outputCsvFormat) {
-      parseTelemToCsv(msgBuffer);
-    }
   }
   else if (packet->type == LORA_TYPE_STATUS) {
     // Status messages from FC - forward to Serial
@@ -263,21 +139,13 @@ void processSerialInput() {
     }
   }
   
+    
   // Process command if ready
   if (cmdReady) {
     Serial.println(); // New line after command
     
     // Check for local commands that don't get sent to FC
-    if (strcmp(cmdBuffer, "CSV_ON") == 0) {
-      outputCsvFormat = true;
-      csvHeaderPrinted = false; // Reset to print header on next telemetry
-      Serial.println("<GS:CSV_FORMAT_ENABLED>");
-    }
-    else if (strcmp(cmdBuffer, "CSV_OFF") == 0) {
-      outputCsvFormat = false;
-      Serial.println("<GS:CSV_FORMAT_DISABLED>");
-    }
-    else if (strcmp(cmdBuffer, "HELP") == 0) {
+    if (strcmp(cmdBuffer, "HELP") == 0) {
       printHelp();
     }
     // Look for command framing - if not properly framed, add it
@@ -325,10 +193,8 @@ void printHelp() {
   Serial.println("  <CMD:FIND_ME>            - Activate buzzer for locating");  Serial.println("  <CMD:CONTROL:param=val>  - Control actuators (e.g., servo=90)");
   Serial.println("  <CMD:NAVC_RESET_STATS>   - Reset NAVC packet statistics");
   Serial.println("  <CMD:ALTITUDE_TEST>      - Test altitude threshold, buzzer and servo (TEST mode only)");
-  Serial.println("  <CMD:LORA_RESET_STATS>   - Reset LoRa statistics counters");
-  Serial.println("  <CMD:LORA_STATS>         - Show detailed LoRa statistics");
-  Serial.println("Local commands:");  Serial.println("  CSV_ON                   - Enable CSV output format for telemetry");
-  Serial.println("  CSV_OFF                  - Display raw telemetry frames (default)");
+  Serial.println("  <CMD:LORA_RESET_STATS>   - Reset LoRa statistics counters");  Serial.println("  <CMD:LORA_STATS>         - Show detailed LoRa statistics");
+  Serial.println("Local commands:");
   Serial.println("  HELP                     - Show this help message");
   Serial.println("Type command and press Enter to send");
   Serial.println("Commands are automatically framed if needed\n");
