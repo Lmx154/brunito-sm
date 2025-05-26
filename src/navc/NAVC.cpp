@@ -10,10 +10,14 @@
 #include "../include/navc/Sensors.h"
 #include "../include/navc/Packet.h"
 #include "../include/utils/FrameCodec.h"
+#include "../include/navc/SDLogger.h"
 
 // Global objects
 SensorManager sensorManager;
 PacketManager packetManager;
+
+// Add global SDLogger instance after SensorManager
+SDLogger* sdLogger = nullptr;  // Initialize as nullptr for safety
 
 // Status variables
 unsigned long lastStatusReportTime = 0;
@@ -101,12 +105,19 @@ void setup() {
       delay(500);
     }
   }
-  
   // If all attempts failed, set red LED
   if (initResult != 0) {
     Serial.println("<DEBUG:ALL_INIT_ATTEMPTS_FAILED>");
     // Set the status LED to red for failed initialization
     sensorManager.setStatusLED(255, 0, 0);
+  }
+  
+  // Initialize SD card logger
+  sdLogger = new SDLogger(sensorManager.getRTC(), &sensorManager);
+  if (sdLogger->begin()) {
+    Serial.println("<DEBUG:SD_LOGGER_INITIALIZED>");
+  } else {
+    Serial.println("<DEBUG:SD_LOGGER_INIT_FAILED>");
   }
   
   // DEBUG: Send a test message to verify UART is working

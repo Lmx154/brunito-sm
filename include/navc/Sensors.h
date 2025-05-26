@@ -115,11 +115,13 @@ public:
     // Get the latest binary packet
     const SensorPacket& getPacket() const;
       // Check if a new packet is ready to stream
-    bool isPacketReady();
-      // Get the number of satellites currently tracked by GPS
+    bool isPacketReady();    // Get the number of satellites currently tracked by GPS
     uint8_t getGpsSatelliteCount() const;
       // Set the RGB status LED color
     void setStatusLED(uint8_t r, uint8_t g, uint8_t b);
+    
+    // Public getter for RTC access (needed for SDLogger)
+    RTC_DS3231& getRTC() { return rtc; }
 };
 
 #endif // SENSORS_H
