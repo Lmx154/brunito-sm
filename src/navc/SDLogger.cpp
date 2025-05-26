@@ -9,6 +9,7 @@ SDLogger::SDLogger(RTC_DS3231& rtc_ref, SensorManager* sm) :
     sensors_ready(false),
     sensor_ready_time_ms(0),
     last_sd_poll_ms(0),
+    last_card_change_ms(0),
     packets_logged(0),
     led_blink_start_ms(0),
     led_blink_active(false) {
@@ -70,30 +71,82 @@ void SDLogger::update() {
 void SDLogger::checkSDCard() {
     uint32_t current_time = millis();
     
-    if (current_time - last_sd_poll_ms < SD_POLL_INTERVAL_MS) {
+    // Use faster polling for 10 seconds after a card change is detected
+    uint32_t poll_interval = SD_POLL_INTERVAL_MS;
+    if (current_time - last_card_change_ms < 10000) {
+        poll_interval = SD_POLL_INTERVAL_FAST_MS;
+    }
+    
+    if (current_time - last_sd_poll_ms < poll_interval) {
         return;
     }
     
     last_sd_poll_ms = current_time;
+      // More robust card detection - try to perform an actual read operation
+    bool card_detected = false;
     
-    // Check if card is still present by trying to open root
-    File root = SD.open("/");
-    bool card_detected = (root ? true : false);
-    if (root) root.close();
-      if (card_detected != sd_card_present) {
+    // Method 1: Try to re-initialize SD card (most reliable for detecting removal)
+    if (SD.begin(SD_CS_PIN)) {
+        // Method 2: Try to read the actual volume info or create a small test operation
+        File testFile = SD.open("/");
+        if (testFile) {
+            testFile.close();
+            
+            // Method 3: If we're currently logging, test if we can still write to our log file
+            if (logging_active && log_file) {
+                // Check if the log file is still valid by trying to get its position
+                size_t pos = log_file.position();
+                if (pos != (size_t)-1) {
+                    card_detected = true;
+                } else {
+                    // File position failed, card likely removed
+                    Serial.println("<DEBUG:SD_CARD_FILE_POSITION_FAILED>");
+                }
+            } else {
+                // Not currently logging, so basic directory access is sufficient
+                card_detected = true;
+            }
+        }
+    }
+    
+    // Additional debug info
+    static uint32_t last_detection_debug = 0;
+    if (current_time - last_detection_debug > 5000) { // Every 5 seconds
+        Serial.print("<DEBUG:SD_CARD_DETECTION:present=");
+        Serial.print(sd_card_present ? "true" : "false");
+        Serial.print(",detected=");
+        Serial.print(card_detected ? "true" : "false");
+        Serial.println(">");
+        last_detection_debug = current_time;
+    }      if (card_detected != sd_card_present) {
         sd_card_present = card_detected;
-          if (card_detected) {
+        last_card_change_ms = current_time;  // Record when change occurred for fast polling
+        
+        if (card_detected) {
             Serial.println("<DEBUG:SD_CARD_INSERTED>");
-            initializeSDCard();
-            // Do NOT automatically start logging - wait for sensors to be ready and stable
-        } else {
+            if (initializeSDCard()) {
+                Serial.println("<DEBUG:SD_CARD_REINITIALIZED>");
+                // Do NOT automatically start logging - wait for sensors to be ready and stable
+                // The main update() loop will handle starting logging when conditions are met
+            } else {
+                Serial.println("<DEBUG:SD_CARD_REINIT_FAILED>");
+            }} else {
             Serial.println("<DEBUG:SD_CARD_REMOVED>");
             closeLogFile();
             
-            // Clear buffer on card removal
+            // Report packets lost due to card removal (before clearing buffer)
+            if (packet_buffer.count > 0) {
+                Serial.print("<DEBUG:SD_PACKETS_LOST:");
+                Serial.print(packet_buffer.count);
+                Serial.println(">");
+            }
+            
+            // Clear buffer on card removal to prevent data loss/corruption
             packet_buffer.head = 0;
             packet_buffer.tail = 0;
             packet_buffer.count = 0;
+            
+            Serial.println("<DEBUG:SD_BUFFER_CLEARED>");
         }
     }
 }
