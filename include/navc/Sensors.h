@@ -113,9 +113,11 @@ public:
     void processGPS();
     
     // Get the latest binary packet
-    const SensorPacket& getPacket() const;
-      // Check if a new packet is ready to stream
-    bool isPacketReady();    // Get the number of satellites currently tracked by GPS
+    const SensorPacket& getPacket() const;    // Check if a new packet is ready to stream
+    bool isPacketReady();
+    
+    // Mark that the current packet has been consumed (updates timing for next packet)
+    void markPacketConsumed();// Get the number of satellites currently tracked by GPS
     uint8_t getGpsSatelliteCount() const;
       // Set the RGB status LED color
     void setStatusLED(uint8_t r, uint8_t g, uint8_t b);

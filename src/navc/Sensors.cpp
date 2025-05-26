@@ -582,8 +582,7 @@ void SensorManager::processSensorData() {
     currentPacket.day = rtcDay;
     currentPacket.hour = rtcHour;
     currentPacket.minute = rtcMinute;
-    currentPacket.second = rtcSecond;
-      // Calculate CRC-16 for the packet using FrameCodec utility
+    currentPacket.second = rtcSecond;    // Calculate CRC-16 for the packet using FrameCodec utility
     // We need to zero out the CRC field first to ensure consistent calculation
     currentPacket.crc16 = 0;
     
@@ -593,14 +592,8 @@ void SensorManager::processSensorData() {
         sizeof(SensorPacket)
     );
     
-    // Check if it's time to stream the packet (50 Hz)
-    unsigned long currentTime = millis();
-    if (currentTime - lastStreamTime >= (1000 / UART_STREAM_RATE_HZ)) {
-        lastStreamTime = currentTime;
-        
-        // Send the packet over Serial2 (UART to FC)
-        Serial2.write(reinterpret_cast<const uint8_t*>(&currentPacket), sizeof(SensorPacket));
-    }
+    // Note: Packet streaming is now handled by the main loop using isPacketReady()
+    // and PacketManager. This ensures both SD logging and UART transmission work together.
 }
 
 const SensorPacket& SensorManager::getPacket() const {
@@ -610,6 +603,11 @@ const SensorPacket& SensorManager::getPacket() const {
 bool SensorManager::isPacketReady() {
     unsigned long currentTime = millis();
     return (currentTime - lastStreamTime >= (1000 / UART_STREAM_RATE_HZ));
+}
+
+void SensorManager::markPacketConsumed() {
+    // Update timing for next packet
+    lastStreamTime = millis();
 }
 
 uint8_t SensorManager::getGpsSatelliteCount() const {

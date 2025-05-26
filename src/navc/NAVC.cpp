@@ -152,16 +152,21 @@ void loop() {
     }
     
     // GPS data is already processed inside updateWithDiagnostics()
-    
-    // Check if a new packet is ready
+      // Check if a new packet is ready
     if (sensorManager.isPacketReady()) {
       // Get the latest packet
       SensorPacket packet = sensorManager.getPacket();
-        // Calculate and set CRC
+      
+      // Calculate and set CRC
       packet.crc16 = calculateCrc16(
           (const uint8_t*)&packet, 
           sizeof(SensorPacket) - sizeof(uint16_t)
       );
+      
+      // Log packet to SD card if logging is active
+      if (sdLogger && sdLogger->isLogging()) {
+        sdLogger->addSensorPacket(packet);
+      }
       
       // Only send telemetry over UART if explicitly enabled
       if (telemetryEnabled) {
@@ -173,6 +178,9 @@ void loop() {
         // Send all queued packets
         packetManager.sendQueuedPackets();
       }
+      
+      // Mark the packet as consumed to update timing for next packet
+      sensorManager.markPacketConsumed();
     }
     
     // Calculate actual sample rate and report status every second

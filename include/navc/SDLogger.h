@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <SD.h>
 #include <RTClib.h>
+#include "Sensors.h"  // For SensorPacket definition
 
 // SD Card configuration
 #define SD_CS_PIN PA4  // Choose appropriate CS pin for your hardware
@@ -48,9 +49,9 @@ private:
     
 public:
     SDLogger(RTC_DS3231& rtc_ref, SensorManager* sm = nullptr);
-    bool begin();
-    void update();
+    bool begin();    void update();
     bool addPacket(const char* packet_data);
+    bool addSensorPacket(const SensorPacket& packet);  // New method for direct sensor packet logging
     bool isLogging() const { return logging_active; }
     uint32_t getPacketsLogged() const { return packets_logged; }
     
@@ -62,6 +63,7 @@ private:
     void closeLogFile();
     void processWrites();
     void updateLED();
+    void formatSensorPacketCSV(const SensorPacket& packet, char* buffer, size_t bufferSize);  // CSV formatter
 };
 
 #endif
