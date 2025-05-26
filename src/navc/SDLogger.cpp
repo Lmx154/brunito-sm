@@ -12,7 +12,8 @@ SDLogger::SDLogger(RTC_DS3231& rtc_ref, SensorManager* sm) :
     last_card_change_ms(0),
     packets_logged(0),
     led_blink_start_ms(0),
-    led_blink_active(false) {
+    led_blink_active(false),
+    led_status_update_ms(0) {
     
     // Initialize packet buffer
     memset(&packet_buffer, 0, sizeof(packet_buffer));
@@ -66,6 +67,7 @@ void SDLogger::update() {
     }
     
     updateLED();
+    updateStatusLED();
 }
 
 void SDLogger::checkSDCard() {
@@ -108,17 +110,7 @@ void SDLogger::checkSDCard() {
             }
         }
     }
-    
-    // Additional debug info
-    static uint32_t last_detection_debug = 0;
-    if (current_time - last_detection_debug > 5000) { // Every 5 seconds
-        Serial.print("<DEBUG:SD_CARD_DETECTION:present=");
-        Serial.print(sd_card_present ? "true" : "false");
-        Serial.print(",detected=");
-        Serial.print(card_detected ? "true" : "false");
-        Serial.println(">");
-        last_detection_debug = current_time;
-    }      if (card_detected != sd_card_present) {
+  if (card_detected != sd_card_present) {
         sd_card_present = card_detected;
         last_card_change_ms = current_time;  // Record when change occurred for fast polling
         
@@ -273,14 +265,7 @@ void SDLogger::processWrites() {
             // Update tail
             packet_buffer.tail = (packet_buffer.tail + 1) % PACKET_BUFFER_SIZE;
             packet_buffer.count--;
-            
-            // Check write time for performance monitoring
-            uint32_t write_duration = micros() - write_start;
-            if (write_duration > 5000) {  // More than 5ms
-                Serial.print("<DEBUG:SLOW_SD_WRITE:");
-                Serial.print(write_duration);
-                Serial.println("us>");
-            }        }
+  }
     }
 }
 
@@ -293,6 +278,41 @@ void SDLogger::updateLED() {
                 sensor_manager->setStatusLED(0, 0, 0);
             }
             led_blink_active = false;
+        }
+    }
+}
+
+void SDLogger::updateStatusLED() {
+    // Only update status LED if no blink is active and we have sensor manager access
+    if (!led_blink_active && sensor_manager) {
+        uint32_t current_time = millis();
+        
+        // Update status LED every 2 seconds
+        if (current_time - led_status_update_ms >= 2000) {
+            led_status_update_ms = current_time;
+            
+            if (!sd_card_present) {
+                // No SD card - slow red pulse
+                static bool red_state = false;
+                red_state = !red_state;
+                if (red_state) {
+                    sensor_manager->setStatusLED(20, 0, 0);  // Dim red
+                } else {
+                    sensor_manager->setStatusLED(0, 0, 0);   // Off
+                }
+            } else if (!logging_active) {
+                // SD card present but not logging - slow blue pulse
+                static bool blue_state = false;
+                blue_state = !blue_state;
+                if (blue_state) {
+                    sensor_manager->setStatusLED(0, 0, 20);  // Dim blue
+                } else {
+                    sensor_manager->setStatusLED(0, 0, 0);   // Off
+                }
+            } else {
+                // Actively logging - solid green
+                sensor_manager->setStatusLED(0, 20, 0);     // Dim green
+            }
         }
     }
 }
@@ -320,17 +340,7 @@ void SDLogger::formatSensorPacketCSV(const SensorPacket& packet, char* buffer, s
     } else {
         snprintf(altStr, sizeof(altStr), "%ld.%02ld", (long)altitudeWhole, (long)altitudeFrac);
     }
-    
-    // Debug altitude conversion
-    static unsigned long lastAltDebugTime = 0;
-    if (millis() - lastAltDebugTime > 10000) { // Every 10 seconds
-        Serial.print("<DEBUG:SD_ALTITUDE:raw_cm=");
-        Serial.print(packet.altitude);
-        Serial.print(",formatted=");
-        Serial.print(altStr);
-        Serial.println(">");
-        lastAltDebugTime = millis();
-    }
+  
     
     snprintf(buffer, bufferSize, 
              "%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%d,%d",

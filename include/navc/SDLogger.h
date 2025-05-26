@@ -42,10 +42,10 @@ private:
     uint32_t last_card_change_ms;  // Track when last change occurred for fast polling
     uint32_t packets_logged;
     File log_file;
-    
-    // LED feedback variables
+      // LED feedback variables
     uint32_t led_blink_start_ms;
     bool led_blink_active;
+    uint32_t led_status_update_ms;  // For periodic status LED updates
     SensorManager* sensor_manager;  // For LED access
     
     // RTC reference from SensorManager
@@ -69,6 +69,7 @@ private:
     void closeLogFile();
     void processWrites();
     void updateLED();
+    void updateStatusLED();  // New method for status indication
     void formatSensorPacketCSV(const SensorPacket& packet, char* buffer, size_t bufferSize);  // CSV formatter
 };
 

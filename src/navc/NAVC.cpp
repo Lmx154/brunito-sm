@@ -234,6 +234,24 @@ void loop() {
 void reportStatus() {
   // Status reporting function - maintains loop timing and statistics
   // Debug output is handled in the main loop, not here
+  
+  // Add SD card status reporting every 10 seconds
+  if (sdLogger) {
+    static uint32_t last_sd_report = 0;
+    uint32_t current_time = millis();
+    
+    if (current_time - last_sd_report >= 10000) {  // Every 10 seconds
+      last_sd_report = current_time;
+      
+      if (sdLogger->isLogging()) {
+        Serial.print("<DEBUG:SD_LOGGING:ACTIVE,PACKETS=");
+        Serial.print(sdLogger->getPacketsLogged());
+        Serial.println(">");
+      } else {
+        Serial.println("<DEBUG:SD_LOGGING:INACTIVE>");
+      }
+    }
+  }
 }
 
 void processFcCommands() {
