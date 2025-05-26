@@ -12,6 +12,7 @@
 #define SD_FILENAME_MAX_LEN 50
 #define LED_BLINK_DURATION_MS 50
 #define SD_POLL_INTERVAL_MS 1000  // Increased from 100ms to reduce overhead
+#define SENSOR_STABILIZATION_DELAY_MS 10000  // 10 second delay after sensor init before logging
 
 // Packet buffer for SD logging
 typedef struct {
@@ -34,6 +35,8 @@ private:
     PacketBuffer packet_buffer;
     bool sd_card_present;
     bool logging_active;
+    bool sensors_ready;  // Track if sensors are ready for logging
+    uint32_t sensor_ready_time_ms;  // When sensors became ready
     char current_log_filename[SD_FILENAME_MAX_LEN];
     uint32_t last_sd_poll_ms;
     uint32_t packets_logged;
@@ -49,7 +52,9 @@ private:
     
 public:
     SDLogger(RTC_DS3231& rtc_ref, SensorManager* sm = nullptr);
-    bool begin();    void update();
+    bool begin();
+    void update();
+    void setSensorsReady();  // Call this when sensors are fully initialized
     bool addPacket(const char* packet_data);
     bool addSensorPacket(const SensorPacket& packet);  // New method for direct sensor packet logging
     bool isLogging() const { return logging_active; }

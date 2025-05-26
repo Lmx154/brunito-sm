@@ -71,12 +71,19 @@ void setup() {
   while (Serial2.available()) {
     Serial2.read();
   }
-  
-  // Status LED is initialized by SensorManager
+    // Status LED is initialized by SensorManager
   Serial.println("<DEBUG:NAVC_INIT>");
   Serial.println("<DEBUG:USB_DEBUG:ENABLED>");
   Serial.println("<DEBUG:BAUD_RATE:921600>");
   Serial.println("<DEBUG:I2C_CLOCK:100kHz>"); // Log the I2C clock speed
+  
+  // Initialize SD card logger BEFORE sensor initialization
+  sdLogger = new SDLogger(sensorManager.getRTC(), &sensorManager);
+  if (sdLogger->begin()) {
+    Serial.println("<DEBUG:SD_LOGGER_INITIALIZED>");
+  } else {
+    Serial.println("<DEBUG:SD_LOGGER_INIT_FAILED>");
+  }
   
   // Initialize sensors with more detailed error reporting
   Serial.println("<DEBUG:ATTEMPTING_SENSOR_INIT>");
@@ -87,13 +94,18 @@ void setup() {
     Serial.print("<DEBUG:INIT_ATTEMPT:");
     Serial.print(attempt);
     Serial.println(">");
-    
-    initResult = sensorManager.beginWithDiagnostics();
+      initResult = sensorManager.beginWithDiagnostics();
     if (initResult == 0) {
       sensorsInitialized = true;
       Serial.println("<DEBUG:SENSORS_INITIALIZED>");
       // Set the status LED to green for successful initialization
       sensorManager.setStatusLED(0, 255, 0);
+      
+      // Notify SD logger that sensors are ready (after initialization)
+      if (sdLogger) {
+        sdLogger->setSensorsReady();
+      }
+      
       break;
     } else {
       // Report which specific sensor failed
@@ -104,20 +116,11 @@ void setup() {
       // Brief pause before retry
       delay(500);
     }
-  }
-  // If all attempts failed, set red LED
+  }  // If all attempts failed, set red LED
   if (initResult != 0) {
     Serial.println("<DEBUG:ALL_INIT_ATTEMPTS_FAILED>");
     // Set the status LED to red for failed initialization
     sensorManager.setStatusLED(255, 0, 0);
-  }
-  
-  // Initialize SD card logger
-  sdLogger = new SDLogger(sensorManager.getRTC(), &sensorManager);
-  if (sdLogger->begin()) {
-    Serial.println("<DEBUG:SD_LOGGER_INITIALIZED>");
-  } else {
-    Serial.println("<DEBUG:SD_LOGGER_INIT_FAILED>");
   }
   
   // DEBUG: Send a test message to verify UART is working
@@ -145,9 +148,13 @@ void loop() {
         char errorBuffer[64];
         snprintf(errorBuffer, sizeof(errorBuffer), "<DEBUG:SENSOR_REINIT_FAILED:CODE=%d>", reinitResult);
         Serial.println(errorBuffer);
-        sensorManager.setStatusLED(255, 128, 0); // Orange indicates partial failure
-      } else {        Serial.println("<DEBUG:SENSOR_REINIT_SUCCESS>");
+        sensorManager.setStatusLED(255, 128, 0); // Orange indicates partial failure      } else {        Serial.println("<DEBUG:SENSOR_REINIT_SUCCESS>");
         sensorManager.setStatusLED(0, 255, 0); // Green for successful reinitialization
+        
+        // Notify SD logger that sensors are ready again
+        if (sdLogger) {
+          sdLogger->setSensorsReady();
+        }
       }
     }
     
@@ -196,12 +203,16 @@ void loop() {
       // Try to reinitialize sensors every 5 seconds
     unsigned long currentTime = millis();
     if (currentTime - lastStatusReportTime >= 5000) {
-      Serial.println("<DEBUG:ATTEMPTING_SENSOR_REINIT>");
-      int initResult = sensorManager.beginWithDiagnostics();
+      Serial.println("<DEBUG:ATTEMPTING_SENSOR_REINIT>");      int initResult = sensorManager.beginWithDiagnostics();
       if (initResult == 0) {
         sensorsInitialized = true;
         Serial.println("<DEBUG:SENSORS_INITIALIZED>");
         sensorManager.setStatusLED(0, 255, 0);
+        
+        // Notify SD logger that sensors are ready
+        if (sdLogger) {
+          sdLogger->setSensorsReady();
+        }
       } else {
         // Report which specific sensor failed
         char errorBuffer[64];

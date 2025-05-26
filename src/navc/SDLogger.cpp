@@ -6,6 +6,8 @@ SDLogger::SDLogger(RTC_DS3231& rtc_ref, SensorManager* sm) :
     sensor_manager(sm),
     sd_card_present(false),
     logging_active(false),
+    sensors_ready(false),
+    sensor_ready_time_ms(0),
     last_sd_poll_ms(0),
     packets_logged(0),
     led_blink_start_ms(0),
@@ -19,22 +21,44 @@ SDLogger::SDLogger(RTC_DS3231& rtc_ref, SensorManager* sm) :
 bool SDLogger::begin() {
     // Initialize SD card pins
     pinMode(SD_CS_PIN, OUTPUT);
-    digitalWrite(SD_CS_PIN, HIGH);
-      // Try to initialize SD card
+    digitalWrite(SD_CS_PIN, HIGH);    // Try to initialize SD card
     if (SD.begin(SD_CS_PIN)) {
         sd_card_present = true;
         
-        // Automatically create a log file when SD card is first detected
-        openLogFile();
+        // Do NOT automatically create a log file here
+        // Wait for sensors to be ready and stabilized
+        Serial.println("<DEBUG:SD_CARD_FOUND>");
         
         return true;
     }
-    
+      Serial.println("<DEBUG:SD_CARD_NOT_FOUND>");
     return false;
+}
+
+void SDLogger::setSensorsReady() {
+    if (!sensors_ready) {
+        sensors_ready = true;
+        sensor_ready_time_ms = millis();
+        Serial.println("<DEBUG:SD_LOGGER_SENSORS_READY>");
+        Serial.print("<DEBUG:SD_LOGGER_STABILIZATION_WAIT:");
+        Serial.print(SENSOR_STABILIZATION_DELAY_MS / 1000);
+        Serial.println("s>");
+    }
 }
 
 void SDLogger::update() {
     checkSDCard();
+    
+    // Check if we should start logging (after sensors are stable)
+    if (sensors_ready && sd_card_present && !logging_active) {
+        uint32_t current_time = millis();
+        if (current_time - sensor_ready_time_ms >= SENSOR_STABILIZATION_DELAY_MS) {
+            // Sensors have been ready and stable for the required time
+            if (openLogFile()) {
+                Serial.println("<DEBUG:SD_LOGGING_STARTED_AFTER_STABILIZATION>");
+            }
+        }
+    }
     
     if (logging_active) {
         processWrites();
@@ -56,14 +80,14 @@ void SDLogger::checkSDCard() {
     File root = SD.open("/");
     bool card_detected = (root ? true : false);
     if (root) root.close();
-    
-    if (card_detected != sd_card_present) {
+      if (card_detected != sd_card_present) {
         sd_card_present = card_detected;
           if (card_detected) {
-            if (initializeSDCard()) {
-                openLogFile();
-            }
+            Serial.println("<DEBUG:SD_CARD_INSERTED>");
+            initializeSDCard();
+            // Do NOT automatically start logging - wait for sensors to be ready and stable
         } else {
+            Serial.println("<DEBUG:SD_CARD_REMOVED>");
             closeLogFile();
             
             // Clear buffer on card removal
