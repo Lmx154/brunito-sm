@@ -47,9 +47,14 @@ typedef struct {
 
 // Using Seeed Studio BMM150 library, no custom structure needed
 
+// Forward declaration for Test class
+class SensorTest;
+
 // Class to manage sensors
 class SensorManager {
-private:    // Hardware drivers
+    friend class SensorTest; // Allow Test class to access private members
+    
+private:// Hardware drivers
     TwoWire *i2c;
     Bmi088Accel *accel;
     Bmi088Gyro *gyro;
@@ -92,13 +97,13 @@ private:    // Hardware drivers
     
 public:
     SensorManager();
-    ~SensorManager(); // Destructor to clean up dynamic memory
-      // Initialize all sensors
+    ~SensorManager(); // Destructor to clean up dynamic memory    // Initialize all sensors
     bool begin();
     
-    // Initialize with detailed diagnostics - returns error code or 0 for success
+    // Initialize sensors with comprehensive diagnostics - returns 0 on success, -1 on failure
     int beginWithDiagnostics();
-      // Main update loop - call as frequently as possible
+    
+    // Main update loop - call as frequently as possible
     void update();
     
     // Update sensors with diagnostics - returns true if successful, false if failures detected
@@ -113,12 +118,8 @@ public:
     bool isPacketReady();
       // Get the number of satellites currently tracked by GPS
     uint8_t getGpsSatelliteCount() const;
-    
-    // Set the RGB status LED color
+      // Set the RGB status LED color
     void setStatusLED(uint8_t r, uint8_t g, uint8_t b);
-    
-    // Utility function to test GPS connection and diagnose wiring issues
-    bool testGpsConnection();
 };
 
 #endif // SENSORS_H
