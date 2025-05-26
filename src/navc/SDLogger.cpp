@@ -25,6 +25,14 @@ bool SDLogger::begin() {
     if (SD.begin(SD_CS_PIN)) {
         sd_card_present = true;
         Serial.println("<DEBUG:SD_CARD_FOUND>");
+        
+        // Automatically create a log file when SD card is first detected
+        if (openLogFile()) {
+            Serial.println("<DEBUG:INITIAL_LOG_FILE_CREATED>");
+        } else {
+            Serial.println("<DEBUG:FAILED_TO_CREATE_LOG_FILE>");
+        }
+        
         return true;
     }
     
@@ -89,29 +97,58 @@ bool SDLogger::initializeSDCard() {
 void SDLogger::generateLogFilename(char* filename, size_t size) {
     DateTime now = rtc.now();
     
+    Serial.print("<DEBUG:RTC_DATE:");
+    Serial.print(now.month());
+    Serial.print("/");
+    Serial.print(now.day());
+    Serial.print("/");
+    Serial.print(now.year());
+    Serial.println(">");
+    
     // Format: MM_DD_YYYY_FLIGHT_DATA_N.txt
     char date_str[12];
     snprintf(date_str, sizeof(date_str), "%02d_%02d_%04d", 
              now.month(), now.day(), now.year());
+    
+    Serial.print("<DEBUG:DATE_STRING:");
+    Serial.print(date_str);
+    Serial.println(">");
     
     // Find next available file number
     int file_number = 1;
     do {
         snprintf(filename, size, "%s_FLIGHT_DATA_%d.txt", 
                 date_str, file_number);
+        Serial.print("<DEBUG:CHECKING_FILE:");
+        Serial.print(filename);
+        Serial.print(", EXISTS:");
+        Serial.print(SD.exists(filename) ? "YES" : "NO");
+        Serial.println(">");
         file_number++;
     } while (SD.exists(filename) && file_number < 100);
+    
+    Serial.print("<DEBUG:FINAL_FILENAME:");
+    Serial.print(filename);
+    Serial.println(">");
 }
 
 bool SDLogger::openLogFile() {
     if (!sd_card_present) {
+        Serial.println("<DEBUG:SD_CARD_NOT_PRESENT>");
         return false;
     }
     
+    Serial.println("<DEBUG:GENERATING_LOG_FILENAME>");
     generateLogFilename(current_log_filename, sizeof(current_log_filename));
+    
+    Serial.print("<DEBUG:ATTEMPTING_TO_OPEN_FILE:");
+    Serial.print(current_log_filename);
+    Serial.println(">");
     
     log_file = SD.open(current_log_filename, FILE_WRITE);
     if (log_file) {
+        Serial.println("<DEBUG:FILE_OPENED_SUCCESSFULLY>");
+        
         // Write header
         log_file.println("# NAVC Flight Data Log");
         log_file.print("# Started: ");
@@ -123,7 +160,10 @@ bool SDLogger::openLogFile() {
                 now.hour(), now.minute(), now.second());
         log_file.println(timestamp);
         log_file.println("# Format: MM/DD/YYYY,HH:MM:SS,altitude,accelX,accelY,accelZ,gyroX,gyroY,gyroZ,magX,magY,magZ,lat,lon,sats,temp");
+        
+        Serial.println("<DEBUG:WRITING_HEADER_COMPLETE>");
         log_file.flush();
+        Serial.println("<DEBUG:FILE_FLUSH_COMPLETE>");
         
         logging_active = true;
         packets_logged = 0;
@@ -135,6 +175,7 @@ bool SDLogger::openLogFile() {
         return true;
     }
     
+    Serial.println("<DEBUG:FAILED_TO_OPEN_FILE>");
     return false;
 }
 

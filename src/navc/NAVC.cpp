@@ -201,7 +201,11 @@ void loop() {
         Serial.println(errorBuffer);
       }
       lastStatusReportTime = currentTime;
-    }
+    }  }
+  
+  // Update SD logger
+  if (sdLogger) {
+    sdLogger->update();
   }
   
   // Always process FC commands, regardless of sensor status
