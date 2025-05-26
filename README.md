@@ -92,13 +92,13 @@ The FC implements a finite state machine with the following transitions:
 ```mermaid
 stateDiagram-v2
     [*] --> IDLE
-    IDLE --> TEST : CMD:ENTER_TEST
-    IDLE --> ARMED : CMD:ARM
-    TEST --> IDLE : CMD:DISARM
-    TEST --> ARMED : CMD:ARM
-    ARMED --> IDLE : CMD:DISARM
-    ARMED --> RECOVERY : auto or CMD:ENTER_RECOVERY
-    RECOVERY --> IDLE : CMD:DISARM
+    IDLE --> TEST : CMD ENTER_TEST
+    IDLE --> ARMED : CMD ARM
+    TEST --> IDLE : CMD DISARM
+    TEST --> ARMED : CMD ARM
+    ARMED --> IDLE : CMD DISARM
+    ARMED --> RECOVERY : auto or CMD ENTER_RECOVERY
+    RECOVERY --> IDLE : CMD DISARM
 ```
 
 ## Data Logging
