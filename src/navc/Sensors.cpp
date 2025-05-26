@@ -416,7 +416,6 @@ void SensorManager::readBarometer() {
     float tempReading = baro.readTemperature();
     float pressureReading = baro.readPressure();
     float currentAltitude = baro.readAltitude(1013.25); // Standard pressure at sea level
-  
     
     if (!isnan(tempReading) && !isnan(pressureReading) && !isnan(currentAltitude)) {
         // Store valid readings
@@ -426,15 +425,42 @@ void SensorManager::readBarometer() {
         // Check if this is the first valid reading to set the reference point
         static bool referenceAltitudeSet = false;
         static float referenceAltitude = 0.0f;
+        static int readingCount = 0;
         
-        if (!referenceAltitudeSet) {
+        // Wait for a few readings before setting reference to ensure stability
+        readingCount++;
+        
+        if (!referenceAltitudeSet && readingCount > 10) {
             referenceAltitude = currentAltitude;
             referenceAltitudeSet = true;
+            
+            #if DEBUG_SENSORS
+            char buffer[64];
+            snprintf(buffer, sizeof(buffer), "<DEBUG:BARO_REF_ALT_SET:%.2fm>", referenceAltitude);
+            Serial.println(buffer);
+            #endif
         }
         
-        // Calculate relative altitude (difference from reference point)
-        altitude = currentAltitude - referenceAltitude;
-  
+        if (referenceAltitudeSet) {
+            // Calculate relative altitude (difference from reference point)
+            altitude = currentAltitude - referenceAltitude;
+        } else {
+            // Before reference is set, use absolute altitude
+            altitude = currentAltitude;
+        }
+        
+        #if DEBUG_SENSORS
+        // Debug altitude values periodically
+        static unsigned long lastAltDebugTime = 0;
+        if (millis() - lastAltDebugTime > 5000) {
+            char buffer[128];
+            snprintf(buffer, sizeof(buffer), "<DEBUG:ALTITUDE:current=%.2f,ref=%.2f,relative=%.2f>", 
+                     currentAltitude, referenceAltitude, altitude);
+            Serial.println(buffer);
+            lastAltDebugTime = millis();
+        }
+        #endif
+        
     } else {
         // Note: Don't set success=false here since this function doesn't return bool
         // The calling function (updateWithDiagnostics) should handle this

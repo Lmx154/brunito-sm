@@ -252,13 +252,37 @@ void SDLogger::formatSensorPacketCSV(const SensorPacket& packet, char* buffer, s
              packet.hour, packet.minute, packet.second);
     
     // Format as CSV: timestamp,altitude,accelX,accelY,accelZ,gyroX,gyroY,gyroZ,magX,magY,magZ,lat,lon,sats,temp
-    // Convert altitude from cm to meters with 2 decimal places
-    float altitudeMeters = packet.altitude / 100.0f;
+    // Manual conversion to avoid float formatting issues on STM32
+    char altStr[16];
+    
+    // Convert altitude from cm to meters with 2 decimal places using integer math
+    int32_t altitudeCm = packet.altitude;
+    int32_t altitudeWhole = altitudeCm / 100;  // Whole meters
+    int32_t altitudeFrac = abs(altitudeCm % 100);  // Fractional part (always positive)
+    
+    // Format altitude manually to avoid float conversion issues
+    if (altitudeCm < 0 && altitudeWhole == 0) {
+        // Special case for negative values between -0.99 and 0
+        snprintf(altStr, sizeof(altStr), "-0.%02ld", (long)altitudeFrac);
+    } else {
+        snprintf(altStr, sizeof(altStr), "%ld.%02ld", (long)altitudeWhole, (long)altitudeFrac);
+    }
+    
+    // Debug altitude conversion
+    static unsigned long lastAltDebugTime = 0;
+    if (millis() - lastAltDebugTime > 10000) { // Every 10 seconds
+        Serial.print("<DEBUG:SD_ALTITUDE:raw_cm=");
+        Serial.print(packet.altitude);
+        Serial.print(",formatted=");
+        Serial.print(altStr);
+        Serial.println(">");
+        lastAltDebugTime = millis();
+    }
     
     snprintf(buffer, bufferSize, 
-             "%s,%.2f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%d,%d",
+             "%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%d,%d",
              timestamp,
-             altitudeMeters,
+             altStr,  // Use the manually formatted altitude string
              packet.accelX, packet.accelY, packet.accelZ,
              packet.gyroX, packet.gyroY, packet.gyroZ,
              packet.magX, packet.magY, packet.magZ,
