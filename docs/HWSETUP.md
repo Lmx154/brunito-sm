@@ -33,6 +33,7 @@ All modules are developed using PlatformIO with the Arduino framework.
 | **BMM150 Magnetometer** | I2C | SCL: PB8, SDA: PB9 | 0x13 |
 | **SD Card** | SPI | CS: PA4, MOSI: PA7, MISO: PA6, SCK: PA5 | - |
 | **SK6812 RGB LED** | GPIO | Data: PC14 | WS2812B protocol |
+| **Buzzer** | GPIO | PA0 | Active buzzer, shared with FC |
 | **Onboard LED** | GPIO | PC13 | Active LOW |
 | **FC UART** | Serial2 | TX: PA3, RX: PA2 | 115200 bps |
 | **USB Debug** | USB CDC | - | 921600 bps |
@@ -65,7 +66,7 @@ All modules are developed using PlatformIO with the Arduino framework.
 | **RFM95W LoRa** | SPI | NSS: PA4, MOSI: PA7, MISO: PA6, SCK: PA5 | - |
 | **LoRa Control** | GPIO | DIO0: PA8, NRST: PA9, DIO1: PA10 | - |
 | **Servo** | PWM | PB14 | TIM2 CH3, 200Hz |
-| **Buzzer** | GPIO | PA0 | Passive buzzer, 2-3kHz |
+| **Buzzer** | GPIO | PA0 | Active buzzer, shared with NAVC |
 | **NAVC UART** | Serial2 | TX: PA3, RX: PA2 | 115200 bps |
 | **Onboard LED** | GPIO | PC13 | Active LOW |
 | **USB Debug** | USB CDC | - | 921600 bps |
@@ -79,6 +80,8 @@ All modules are developed using PlatformIO with the Arduino framework.
 - **Sync Word**: 0xAB
 - **TX Power**: 20 dBm
 - **Node Address**: 0xA2
+
+**Note**: The buzzer on pin PA0 is shared between NAVC and FC modules for audio feedback.
 
 ### GS (Ground Station)
 

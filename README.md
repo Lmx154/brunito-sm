@@ -89,14 +89,16 @@ Where TYPE can be:
 
 The FC implements a finite state machine with the following transitions:
 
-```
-[IDLE] -- CMD:ENTER_TEST --> [TEST]
-[IDLE] -- CMD:ARM --> [ARMED]  
-[TEST] -- CMD:DISARM --> [IDLE]
-[TEST] -- CMD:ARM --> [ARMED]
-[ARMED] -- CMD:DISARM --> [IDLE]
-[ARMED] -- auto or CMD:ENTER_RECOVERY --> [RECOVERY]
-[RECOVERY] -- CMD:DISARM --> [IDLE]
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE --> TEST : CMD:ENTER_TEST
+    IDLE --> ARMED : CMD:ARM
+    TEST --> IDLE : CMD:DISARM
+    TEST --> ARMED : CMD:ARM
+    ARMED --> IDLE : CMD:DISARM
+    ARMED --> RECOVERY : auto or CMD:ENTER_RECOVERY
+    RECOVERY --> IDLE : CMD:DISARM
 ```
 
 ## Data Logging
