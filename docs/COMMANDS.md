@@ -21,7 +21,7 @@ Below is the complete list of commands, including their descriptions, allowed st
 - **Example**: `<CMD:DISARM>`
 
 ### 3. `<CMD:ENTER_TEST>`
-- **Description**: Enters TEST mode for pre-flight diagnostics, streaming test outputs at 50 Hz.
+- **Description**: Enters TEST mode for pre-flight diagnostics, streaming test outputs at 50 Hz and telemetry packets at 0.5 Hz for debugging.
 - **Allowed States**: IDLE
 - **Example**: `<CMD:ENTER_TEST>`
 

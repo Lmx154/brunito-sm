@@ -474,13 +474,14 @@ void handleLoraPacket(LoraPacket* packet) {
 
 // Function to process binary packets from NAVC
 void uartTask() {
-  // Check if we're in ARMED or RECOVERY state - only process data if in these states
+  // Check if we're in ARMED, RECOVERY, or TEST state - process data if in these states
   uint8_t currentState = stateManager.getCurrentState();
   bool isArmed = (currentState == STATE_ARMED);
   bool isRecovery = (currentState == STATE_RECOVERY);
-  bool shouldProcessTelemetry = (isArmed || isRecovery);
+  bool isTest = (currentState == STATE_TEST);
+  bool shouldProcessTelemetry = (isArmed || isRecovery || isTest);
   
-  // If we're in ARMED or RECOVERY state, tell NAVC to start streaming telemetry
+  // If we're in ARMED, RECOVERY, or TEST state, tell NAVC to start streaming telemetry
   // Otherwise, tell it to stop
   static bool lastTelemetryState = false;
   if (shouldProcessTelemetry != lastTelemetryState) {
@@ -695,10 +696,24 @@ void uartTask() {
             Serial.println(telemStr);
             loraManager.sendPacket(LORA_TYPE_TELEM, telemStr.c_str(), telemStr.length());
           }
-        }
-        break;
+        }        break;
           case STATE_TEST:
-        // In TEST state, report sensor values for testing
+        // In TEST state, send telemetry at 0.5 Hz (1 packet every 2 seconds) for debugging
+        if (loraManager.isInitialized()) {
+          unsigned long now = millis();
+          if (now - lastTelemTime >= 2000) { // 0.5 Hz (every 2 seconds)
+            lastTelemTime = now;
+            
+            // Format full telemetry like ARMED state but at slower rate
+            String telemStr = formatTelem(packet, false);
+            
+            // Send telemetry to debug port and LoRa for testing
+            Serial.println(telemStr);
+            loraManager.sendPacket(LORA_TYPE_TELEM, telemStr.c_str(), telemStr.length());
+          }
+        }
+        
+        // Also report sensor values for testing (every packet)
         char testBuffer[128];
         snprintf(testBuffer, sizeof(testBuffer), 
                 "<TEST:ALT:%.2fm,ACCEL:%.2f,%.2f,%.2f>",
