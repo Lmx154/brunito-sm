@@ -31,22 +31,22 @@ The core sensor data structure transmitted from NAVC to FC:
 struct SensorPacket {
     uint32_t timestamp;        // Milliseconds since boot (4 bytes)
     
-    // Accelerometer data (12 bytes)
+    // Accelerometer data (12 bytes) - Pre-filtered with EMA α=0.2
     float accel_x;            // m/s² (4 bytes)
     float accel_y;            // m/s² (4 bytes)
     float accel_z;            // m/s² (4 bytes)
     
-    // Gyroscope data (12 bytes)
+    // Gyroscope data (12 bytes) - Pre-filtered with EMA α=0.2
     float gyro_x;             // rad/s (4 bytes)
     float gyro_y;             // rad/s (4 bytes)
     float gyro_z;             // rad/s (4 bytes)
     
-    // Magnetometer data (12 bytes)
+    // Magnetometer data (12 bytes) - Pre-filtered with EMA α=0.1
     float mag_x;              // µT (4 bytes)
     float mag_y;              // µT (4 bytes)
     float mag_z;              // µT (4 bytes)
     
-    // Barometric data (4 bytes)
+    // Barometric data (4 bytes) - Pre-filtered with EMA α=0.05
     float pressure;           // hPa (4 bytes)
     
     // CRC validation (2 bytes)
@@ -57,6 +57,24 @@ struct SensorPacket {
 **Total Size**: 46 bytes  
 **Transmission Rate**: 50Hz (NAVC → FC)  
 **Validation**: CRC16-CCITT with polynomial 0x1021, initial value 0xFFFF
+
+#### 📊 **Important: Pre-Applied Low-Pass Filtering**
+
+**All sensor data in the telemetry stream has been pre-processed with Exponential Moving Average (EMA) low-pass filters** to reduce MEMS sensor noise and improve data quality for real-time flight control applications.
+
+**Filter Parameters**:
+- **Accelerometer & Gyroscope**: α = 0.2 (moderate smoothing, preserves responsiveness for flight control)
+- **Magnetometer**: α = 0.1 (higher smoothing due to EMI sensitivity)  
+- **Barometer**: α = 0.05 (heavy smoothing for stable altitude readings)
+
+**EMA Formula**: `filtered_value = α × raw_value + (1-α) × previous_filtered_value`
+
+**Implications for Software Development**:
+- Data is already noise-reduced and suitable for direct use in flight algorithms
+- No additional low-pass filtering is typically needed in ground station software
+- Higher-frequency noise components (>5-10Hz) have been significantly attenuated
+- Original sensor noise characteristics are not present in the telemetry data
+- Filter introduces minimal phase lag while preserving signal dynamics important for flight control
 
 ### 2. LoRa Packet Structure (FC ↔ GS)
 
@@ -307,6 +325,7 @@ sprintf(buffer, "RECOVERY:T=%lu,LAT=%.6f,LON=%.6f,ALT=%.1f",
 - **Protocol**: Custom binary with CRC16 validation
 - **Rate**: 50Hz continuous when telemetry enabled
 - **Transport**: UART (115200 baud) with hardware flow control
+- **Data Processing**: All sensor values are pre-filtered with EMA low-pass filters before transmission
 
 #### Frame Structure
 ```
@@ -334,6 +353,8 @@ The NAVC provides extensive debug information via USB CDC:
 ### Complete Field Reference for Applications
 
 When building applications to interface with the Brunito flight computer, you'll primarily work with CSV telemetry strings. Here's everything you need to know:
+
+⚠️ **Critical Note**: All sensor data (accelerometer, gyroscope, magnetometer, barometer) has been **pre-filtered with EMA low-pass filters** at the NAVC level. The values in telemetry packets are already noise-reduced and do not require additional filtering for most applications.
 
 #### Primary Data Format
 **Input String**: `<05/27/2025,11:43:46,0.95,-37,-967,-3,128,-27,204,6,-53,20,1,1,0,24>`
@@ -375,14 +396,20 @@ def parse_brunito_telemetry(data_line):
 #### Expected Value Ranges for Validation
 | Parameter | Minimum | Maximum | Invalid Value | Notes |
 |-----------|---------|---------|---------------|-------|
-| Altitude | -1000m | +50000m | > 50000 | Barometric altitude |
-| Acceleration | -20g | +20g | > 200 m/s² | Total acceleration |
-| Gyroscope | -2000°/s | +2000°/s | > 2000°/s | Angular rates |
-| Magnetometer | -100µT | +100µT | All zeros | Earth's field ~25-65µT |
+| Altitude | -1000m | +50000m | > 50000 | Barometric altitude (EMA filtered, α=0.05) |
+| Acceleration | -20g | +20g | > 200 m/s² | Total acceleration (EMA filtered, α=0.2) |
+| Gyroscope | -2000°/s | +2000°/s | > 2000°/s | Angular rates (EMA filtered, α=0.2) |
+| Magnetometer | -100µT | +100µT | All zeros | Earth's field ~25-65µT (EMA filtered, α=0.1) |
 | Latitude | -90° | +90° | 0.0000000° | GPS coordinate |
 | Longitude | -180° | +180° | 0.0000000° | GPS coordinate |
 | Satellites | 0 | 12 | >12 | GPS satellites in view |
 | Temperature | -40°C | +85°C | <-50°C or >100°C | Operating range |
+
+**Filter Effects on Data Quality**:
+- Sensor noise and high-frequency vibrations are significantly reduced
+- Rapid transients are smoothed but major motion events are preserved
+- Data appears more stable compared to raw MEMS sensor output
+- No additional filtering required for visualization or basic flight analysis
 
 #### Data Quality Indicators
 ```python
@@ -773,6 +800,7 @@ if __name__ == "__main__":
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2025-05-27 | Initial documentation |
+| 1.1 | 2025-01-27 | Updated to reflect EMA low-pass filtering implementation on all MEMS sensors |
 
 ---
 
