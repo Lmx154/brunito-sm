@@ -7,6 +7,7 @@
 
 #include <Arduino.h>
 #include <HardwareSerial.h>
+#include <STM32FreeRTOS.h>
 #include "../include/navc/Sensors.h"
 #include "../include/navc/Packet.h"
 #include "../include/utils/FrameCodec.h"
@@ -18,6 +19,11 @@ PacketManager packetManager;
 
 // Add global SDLogger instance after SensorManager
 SDLogger* sdLogger = nullptr;  // Initialize as nullptr for safety
+
+// FreeRTOS mutexes
+SemaphoreHandle_t i2cMutex = NULL;
+SemaphoreHandle_t serialMutex = NULL;
+SemaphoreHandle_t sdMutex = NULL;
 
 // Status variables
 unsigned long lastStatusReportTime = 0;
@@ -35,6 +41,11 @@ static bool cmdInProgress = false;
 // Telemetry control
 bool telemetryEnabled = false;      // Start with telemetry disabled
 bool usbDebugEnabled = true;        // Enable USB debugging by default
+
+// FreeRTOS Task function declarations
+void sensorTask(void *pvParameters);
+void sdTask(void *pvParameters);
+void commandTask(void *pvParameters);
 
 // Function declarations
 void reportStatus();
@@ -66,12 +77,21 @@ void setup() {
   Serial2.begin(115200);
   Serial2.setTx(PA3); // Corrected pin (PA3 for TX)
   Serial2.setRx(PA2); // Corrected pin (PA2 for RX)
-  
-  // Clear any pending data to start with clean buffers
+    // Clear any pending data to start with clean buffers
   while (Serial2.available()) {
     Serial2.read();
   }
-    // Status LED is initialized by SensorManager
+    // Initialize FreeRTOS mutexes
+  i2cMutex = xSemaphoreCreateMutex();
+  serialMutex = xSemaphoreCreateMutex();
+  sdMutex = xSemaphoreCreateMutex();
+  
+  if (i2cMutex == NULL || serialMutex == NULL || sdMutex == NULL) {
+    Serial.println("<DEBUG:MUTEX_INIT_FAILED>");
+    while (1); // Halt if mutex creation fails
+  }
+  
+  // Status LED is initialized by SensorManager
   Serial.println("<DEBUG:NAVC_INIT>");
   Serial.println("<DEBUG:USB_DEBUG:ENABLED>");
   Serial.println("<DEBUG:BAUD_RATE:921600>");
@@ -122,113 +142,192 @@ void setup() {
     // Set the status LED to red for failed initialization
     sensorManager.setStatusLED(255, 0, 0);
   }
-  
-  // DEBUG: Send a test message to verify UART is working
+    // DEBUG: Send a test message to verify UART is working
   Serial.println("<DEBUG:TESTING_UART_CONNECTION>");
   Serial2.println("<NAVC:READY>");
   Serial2.flush(); // Ensure data is sent
   
   startTime = millis();
+  
+  // Create FreeRTOS tasks
+  xTaskCreate(
+    sensorTask,           // Task function
+    "SensorTask",         // Task name
+    2048,                 // Stack size (words)
+    NULL,                 // Task parameters
+    3,                    // Priority (higher than SD task)
+    NULL                  // Task handle
+  );
+  
+  xTaskCreate(
+    sdTask,              // Task function
+    "SDTask",            // Task name
+    2048,                // Stack size (words)
+    NULL,                // Task parameters
+    1,                   // Priority (lower than sensor task)
+    NULL                 // Task handle
+  );
+  
+  xTaskCreate(
+    commandTask,         // Task function
+    "CommandTask",       // Task name
+    1024,                // Stack size (words)
+    NULL,                // Task parameters
+    2,                   // Priority (medium priority)
+    NULL                 // Task handle
+  );
+  
+  // Start the FreeRTOS scheduler
+  vTaskStartScheduler();
+  
+  // Should never reach here if scheduler starts successfully
+  Serial.println("<DEBUG:SCHEDULER_START_FAILED>");
+  while (1);
 }
 
 void loop() {
-  // Main loop runs as fast as possible
-  loopCounter++;
-    if (sensorsInitialized) {
-    // Try to update sensors and verify they're still responding
-    bool sensorUpdateSuccessful = sensorManager.updateWithDiagnostics();
-    
-    // If sensor update failed, try to reinitialize
-    if (!sensorUpdateSuccessful) {
-      Serial.println("<DEBUG:SENSOR_UPDATE_FAILED>");
-      Serial.println("<DEBUG:ATTEMPTING_SENSOR_REINIT>");
-      
-      int reinitResult = sensorManager.beginWithDiagnostics();
-      if (reinitResult != 0) {
-        char errorBuffer[64];
-        snprintf(errorBuffer, sizeof(errorBuffer), "<DEBUG:SENSOR_REINIT_FAILED:CODE=%d>", reinitResult);
-        Serial.println(errorBuffer);
-        sensorManager.setStatusLED(255, 128, 0); // Orange indicates partial failure      } else {        Serial.println("<DEBUG:SENSOR_REINIT_SUCCESS>");
-        sensorManager.setStatusLED(0, 255, 0); // Green for successful reinitialization
+  // Empty - FreeRTOS tasks handle everything
+  // This should never be called once the scheduler starts
+}
+
+// High priority sensor task - handles sensors and telemetry
+void sensorTask(void *pvParameters) {
+  while (1) {
+    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+      if (sensorsInitialized) {
+        // Try to update sensors and verify they're still responding
+        bool sensorUpdateSuccessful = sensorManager.updateWithDiagnostics();
         
-        // Notify SD logger that sensors are ready again
-        if (sdLogger) {
-          sdLogger->setSensorsReady();
-        }
-      }
-    }
-    
-    // GPS data is already processed inside updateWithDiagnostics()
-      // Check if a new packet is ready
-    if (sensorManager.isPacketReady()) {
-      // Get the latest packet
-      SensorPacket packet = sensorManager.getPacket();
-      
-      // Calculate and set CRC
-      packet.crc16 = calculateCrc16(
-          (const uint8_t*)&packet, 
-          sizeof(SensorPacket) - sizeof(uint16_t)
-      );
-      
-      // Log packet to SD card if logging is active
-      if (sdLogger && sdLogger->isLogging()) {
-        sdLogger->addSensorPacket(packet);
-      }
-      
-      // Only send telemetry over UART if explicitly enabled
-      if (telemetryEnabled) {
-        // Enqueue the packet for transmission
-        if (packetManager.enqueuePacket(packet)) {
-          sampleCount++;
+        // If sensor update failed, try to reinitialize
+        if (!sensorUpdateSuccessful) {
+          if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            Serial.println("<DEBUG:SENSOR_UPDATE_FAILED>");
+            Serial.println("<DEBUG:ATTEMPTING_SENSOR_REINIT>");
+            xSemaphoreGive(serialMutex);
+          }
+          
+          int reinitResult = sensorManager.beginWithDiagnostics();
+          if (reinitResult != 0) {
+            if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+              char errorBuffer[64];
+              snprintf(errorBuffer, sizeof(errorBuffer), "<DEBUG:SENSOR_REINIT_FAILED:CODE=%d>", reinitResult);
+              Serial.println(errorBuffer);
+              xSemaphoreGive(serialMutex);
+            }
+            sensorManager.setStatusLED(255, 128, 0); // Orange indicates partial failure
+          } else {
+            if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+              Serial.println("<DEBUG:SENSOR_REINIT_SUCCESS>");
+              xSemaphoreGive(serialMutex);
+            }
+            sensorManager.setStatusLED(0, 255, 0); // Green for successful reinitialization
+            
+            // Notify SD logger that sensors are ready again
+            if (sdLogger) {
+              sdLogger->setSensorsReady();
+            }
+          }
         }
         
-        // Send all queued packets
-        packetManager.sendQueuedPackets();
-      }
-      
-      // Mark the packet as consumed to update timing for next packet
-      sensorManager.markPacketConsumed();
-    }
-    
-    // Calculate actual sample rate and report status every second
-    unsigned long currentTime = millis();
-    if (currentTime - lastStatusReportTime >= 1000) {
-      actualSampleRate = sampleCount / ((currentTime - startTime) / 1000.0f);
-      reportStatus();
-      lastStatusReportTime = currentTime;
-    }
-  } else {
-    // If sensor initialization failed, blink LED rapidly
-    digitalWrite(PC13, (millis() % 200) < 100);
-      // Try to reinitialize sensors every 5 seconds
-    unsigned long currentTime = millis();
-    if (currentTime - lastStatusReportTime >= 5000) {
-      Serial.println("<DEBUG:ATTEMPTING_SENSOR_REINIT>");      int initResult = sensorManager.beginWithDiagnostics();
-      if (initResult == 0) {
-        sensorsInitialized = true;
-        Serial.println("<DEBUG:SENSORS_INITIALIZED>");
-        sensorManager.setStatusLED(0, 255, 0);
+        // Check if a new packet is ready
+        if (sensorManager.isPacketReady()) {
+          // Get the latest packet
+          SensorPacket packet = sensorManager.getPacket();
+          
+          // Calculate and set CRC
+          packet.crc16 = calculateCrc16(
+              (const uint8_t*)&packet, 
+              sizeof(SensorPacket) - sizeof(uint16_t)
+          );
+          
+          // Log packet to SD card if logging is active
+          if (sdLogger && sdLogger->isLogging()) {
+            sdLogger->addSensorPacket(packet);
+          }
+          
+          // Only send telemetry over UART if explicitly enabled
+          if (telemetryEnabled) {
+            // Enqueue the packet for transmission
+            if (packetManager.enqueuePacket(packet)) {
+              sampleCount++;
+            }
+            
+            // Send all queued packets
+            packetManager.sendQueuedPackets();
+          }
+          
+          // Mark the packet as consumed to update timing for next packet
+          sensorManager.markPacketConsumed();
+        }
         
-        // Notify SD logger that sensors are ready
-        if (sdLogger) {
-          sdLogger->setSensorsReady();
+        // Calculate actual sample rate and report status every second
+        unsigned long currentTime = millis();
+        if (currentTime - lastStatusReportTime >= 1000) {
+          actualSampleRate = sampleCount / ((currentTime - startTime) / 1000.0f);
+          reportStatus();
+          lastStatusReportTime = currentTime;
         }
       } else {
-        // Report which specific sensor failed
-        char errorBuffer[64];
-        snprintf(errorBuffer, sizeof(errorBuffer), "<DEBUG:SENSOR_REINIT_FAILED:CODE=%d>", initResult);
-        Serial.println(errorBuffer);
+        // If sensor initialization failed, blink LED rapidly
+        digitalWrite(PC13, (millis() % 200) < 100);
+        
+        // Try to reinitialize sensors every 5 seconds
+        unsigned long currentTime = millis();
+        if (currentTime - lastStatusReportTime >= 5000) {
+          if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            Serial.println("<DEBUG:ATTEMPTING_SENSOR_REINIT>");
+            xSemaphoreGive(serialMutex);
+          }
+          
+          int initResult = sensorManager.beginWithDiagnostics();
+          if (initResult == 0) {
+            sensorsInitialized = true;
+            if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+              Serial.println("<DEBUG:SENSORS_INITIALIZED>");
+              xSemaphoreGive(serialMutex);
+            }
+            sensorManager.setStatusLED(0, 255, 0);
+            
+            // Notify SD logger that sensors are ready
+            if (sdLogger) {
+              sdLogger->setSensorsReady();
+            }
+          } else {
+            if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+              char errorBuffer[64];
+              snprintf(errorBuffer, sizeof(errorBuffer), "<DEBUG:SENSOR_REINIT_FAILED:CODE=%d>", initResult);
+              Serial.println(errorBuffer);
+              xSemaphoreGive(serialMutex);
+            }
+          }
+          lastStatusReportTime = currentTime;
+        }
       }
-      lastStatusReportTime = currentTime;
-    }  }
-  
-  // Update SD logger
-  if (sdLogger) {
-    sdLogger->update();
+      
+      xSemaphoreGive(i2cMutex);
+    }
+    
+    vTaskDelay(pdMS_TO_TICKS(10)); // ~100 Hz sensor update rate
   }
-  
-  // Always process FC commands, regardless of sensor status
-  processFcCommands();
+}
+
+// Low priority SD card task - handles SD polling and logging
+void sdTask(void *pvParameters) {
+  while (1) {
+    if (sdLogger) {
+      sdLogger->update();
+    }
+    
+    vTaskDelay(pdMS_TO_TICKS(1000)); // 1 Hz SD polling rate
+  }
+}
+
+// Medium priority command task - handles UART commands
+void commandTask(void *pvParameters) {
+  while (1) {
+    processFcCommands();
+    vTaskDelay(pdMS_TO_TICKS(5)); // Check for commands every 5ms
+  }
 }
 
 void reportStatus() {
@@ -243,12 +342,15 @@ void reportStatus() {
     if (current_time - last_sd_report >= 10000) {  // Every 10 seconds
       last_sd_report = current_time;
       
-      if (sdLogger->isLogging()) {
-        Serial.print("<DEBUG:SD_LOGGING:ACTIVE,PACKETS=");
-        Serial.print(sdLogger->getPacketsLogged());
-        Serial.println(">");
-      } else {
-        Serial.println("<DEBUG:SD_LOGGING:INACTIVE>");
+      if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        if (sdLogger->isLogging()) {
+          Serial.print("<DEBUG:SD_LOGGING:ACTIVE,PACKETS=");
+          Serial.print(sdLogger->getPacketsLogged());
+          Serial.println(">");
+        } else {
+          Serial.println("<DEBUG:SD_LOGGING:INACTIVE>");
+        }
+        xSemaphoreGive(serialMutex);
       }
     }
   }
@@ -302,9 +404,12 @@ void processFcCommands() {
 
 void processCommand() {
   // Log the received command for debugging
-  Serial.print("<DEBUG:COMMAND_RECEIVED:");
-  Serial.print(cmdBuffer);
-  Serial.println(">");
+  if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    Serial.print("<DEBUG:COMMAND_RECEIVED:");
+    Serial.print(cmdBuffer);
+    Serial.println(">");
+    xSemaphoreGive(serialMutex);
+  }
   
   // Process known commands
   if (strcmp(cmdBuffer, "<PING>") == 0) {
@@ -315,7 +420,10 @@ void processCommand() {
     sampleCount = 0;
     startTime = millis();
     sendCommandResponse("<ACK:STATS_RESET>");
-    Serial.println("<DEBUG:STATS_RESET>");
+    if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      Serial.println("<DEBUG:STATS_RESET>");
+      xSemaphoreGive(serialMutex);
+    }
   }
   else if (strcmp(cmdBuffer, "<START_TELEMETRY>") == 0) {
     // First respond to acknowledge the command immediately
@@ -323,7 +431,10 @@ void processCommand() {
     
     // Then enable telemetry streaming
     telemetryEnabled = true;
-    Serial.println("<DEBUG:TELEMETRY_STARTED>");
+    if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      Serial.println("<DEBUG:TELEMETRY_STARTED>");
+      xSemaphoreGive(serialMutex);
+    }
   }
   else if (strcmp(cmdBuffer, "<STOP_TELEMETRY>") == 0) {
     // First respond to acknowledge the command immediately  
@@ -331,29 +442,42 @@ void processCommand() {
     
     // Then disable telemetry streaming
     telemetryEnabled = false;
-    Serial.println("<DEBUG:TELEMETRY_STOPPED>");
+    if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      Serial.println("<DEBUG:TELEMETRY_STOPPED>");
+      xSemaphoreGive(serialMutex);
+    }
   }
   else if (strcmp(cmdBuffer, "<USB_DEBUG_ON>") == 0) {
     // Enable USB debugging
     usbDebugEnabled = true;
-    Serial.println("<DEBUG:USB_DEBUG_ENABLED>");
+    if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      Serial.println("<DEBUG:USB_DEBUG_ENABLED>");
+      xSemaphoreGive(serialMutex);
+    }
     sendCommandResponse("<ACK:USB_DEBUG_ENABLED>");
   }
   else if (strcmp(cmdBuffer, "<USB_DEBUG_OFF>") == 0) {
     // Disable USB debugging
-    Serial.println("<DEBUG:USB_DEBUG_DISABLED>");
+    if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      Serial.println("<DEBUG:USB_DEBUG_DISABLED>");
+      xSemaphoreGive(serialMutex);
+    }
     sendCommandResponse("<ACK:USB_DEBUG_DISABLED>");
     usbDebugEnabled = false;
-  }  else if (strncmp(cmdBuffer, "<ECHO:", 6) == 0) {
+  }
+  else if (strncmp(cmdBuffer, "<ECHO:", 6) == 0) {
     // Check if it's a test command for the buzzer
     if (strcmp(cmdBuffer, "<ECHO:BUZZER_TEST>") == 0) {
       // This is our test buzzer command
-      Serial.println("<DEBUG:BUZZER_TEST_RECEIVED>");
+      if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        Serial.println("<DEBUG:BUZZER_TEST_RECEIVED>");
+        xSemaphoreGive(serialMutex);
+      }
       
       // Activate buzzer on pin A0 (using digitalWrite for simple on/off)
       pinMode(PA0, OUTPUT);
       digitalWrite(PA0, HIGH);  // Turn on buzzer
-      delay(500);               // Beep for 500ms
+      vTaskDelay(pdMS_TO_TICKS(500)); // Beep for 500ms
       digitalWrite(PA0, LOW);   // Turn off buzzer
       
       sendCommandResponse("<ACK:BUZZER_TEST_COMPLETE>");
@@ -388,16 +512,19 @@ void sendCommandResponse(const char* response) {
   
   // Log the response for debugging with time info
   if (usbDebugEnabled) {
-    char debugBuffer[128];
-    snprintf(debugBuffer, sizeof(debugBuffer), 
-             "<DEBUG:RESPONSE_SENT:%s,FLUSH_TIME:%lu>", 
-             response, flushDuration);
-    Serial.println(debugBuffer);
+    if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      char debugBuffer[128];
+      snprintf(debugBuffer, sizeof(debugBuffer), 
+               "<DEBUG:RESPONSE_SENT:%s,FLUSH_TIME:%lu>", 
+               response, flushDuration);
+      Serial.println(debugBuffer);
+      xSemaphoreGive(serialMutex);
+    }
   }
   
   // Add small delay to ensure FC has time to process
   if (flushDuration < 2) {
-    delay(2 - flushDuration); // Small delay to prevent buffer issues
+    vTaskDelay(pdMS_TO_TICKS(2 - flushDuration)); // Small delay to prevent buffer issues
   }
 }
 

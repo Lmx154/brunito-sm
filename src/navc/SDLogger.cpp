@@ -31,17 +31,29 @@ bool SDLogger::begin() {
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, LOW);
     
-    // Try to initialize SD card
-    if (SD.begin(SD_CS_PIN)) {
-        sd_card_present = true;
+    // Try to initialize SD card with mutex protection
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        bool result = SD.begin(SD_CS_PIN);
+        xSemaphoreGive(sdMutex);
         
-        // Do NOT automatically create a log file here
-        // Wait for sensors to be ready and stabilized
-        Serial.println("<DEBUG:SD_CARD_FOUND>");
-        
-        return true;
+        if (result) {
+            sd_card_present = true;
+            
+            // Do NOT automatically create a log file here
+            // Wait for sensors to be ready and stabilized
+            if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                Serial.println("<DEBUG:SD_CARD_FOUND>");
+                xSemaphoreGive(serialMutex);
+            }
+            
+            return true;
+        }
     }
-      Serial.println("<DEBUG:SD_CARD_NOT_FOUND>");
+    
+    if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        Serial.println("<DEBUG:SD_CARD_NOT_FOUND>");
+        xSemaphoreGive(serialMutex);
+    }
     return false;
 }
 
@@ -49,10 +61,13 @@ void SDLogger::setSensorsReady() {
     if (!sensors_ready) {
         sensors_ready = true;
         sensor_ready_time_ms = millis();
-        Serial.println("<DEBUG:SD_LOGGER_SENSORS_READY>");
-        Serial.print("<DEBUG:SD_LOGGER_STABILIZATION_WAIT:");
-        Serial.print(SENSOR_STABILIZATION_DELAY_MS / 1000);
-        Serial.println("s>");
+        if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            Serial.println("<DEBUG:SD_LOGGER_SENSORS_READY>");
+            Serial.print("<DEBUG:SD_LOGGER_STABILIZATION_WAIT:");
+            Serial.print(SENSOR_STABILIZATION_DELAY_MS / 1000);
+            Serial.println("s>");
+            xSemaphoreGive(serialMutex);
+        }
     }
 }
 
@@ -61,11 +76,13 @@ void SDLogger::update() {
     
     // Check if we should start logging (after sensors are stable)
     if (sensors_ready && sd_card_present && !logging_active) {
-        uint32_t current_time = millis();
-        if (current_time - sensor_ready_time_ms >= SENSOR_STABILIZATION_DELAY_MS) {
+        uint32_t current_time = millis();        if (current_time - sensor_ready_time_ms >= SENSOR_STABILIZATION_DELAY_MS) {
             // Sensors have been ready and stable for the required time
             if (openLogFile()) {
-                Serial.println("<DEBUG:SD_LOGGING_STARTED_AFTER_STABILIZATION>");
+                if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    Serial.println("<DEBUG:SD_LOGGING_STARTED_AFTER_STABILIZATION>");
+                    xSemaphoreGive(serialMutex);
+                }
             }
         }
     }
@@ -93,7 +110,18 @@ void SDLogger::checkSDCard() {
     }
     
     last_sd_poll_ms = current_time;
-      // More robust card detection - try to perform an actual read operation
+    
+    // Protect all SD card operations with mutex
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        // Failed to get mutex, skip this check
+        if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            Serial.println("<DEBUG:SD_MUTEX_TIMEOUT>");
+            xSemaphoreGive(serialMutex);
+        }
+        return;
+    }
+    
+    // More robust card detection - try to perform an actual read operation
     bool card_detected = false;
     
     // Method 1: Try to re-initialize SD card (most reliable for detecting removal)
@@ -111,7 +139,10 @@ void SDLogger::checkSDCard() {
                     card_detected = true;
                 } else {
                     // File position failed, card likely removed
-                    Serial.println("<DEBUG:SD_CARD_FILE_POSITION_FAILED>");
+                    if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                        Serial.println("<DEBUG:SD_CARD_FILE_POSITION_FAILED>");
+                        xSemaphoreGive(serialMutex);
+                    }
                 }
             } else {
                 // Not currently logging, so basic directory access is sufficient
@@ -119,46 +150,99 @@ void SDLogger::checkSDCard() {
             }
         }
     }
-  if (card_detected != sd_card_present) {
+    
+    // Release SD mutex before processing state changes
+    xSemaphoreGive(sdMutex);
+    
+    if (card_detected != sd_card_present) {
         sd_card_present = card_detected;
         last_card_change_ms = current_time;  // Record when change occurred for fast polling
         
         if (card_detected) {
-            Serial.println("<DEBUG:SD_CARD_INSERTED>");
-            if (initializeSDCard()) {
-                Serial.println("<DEBUG:SD_CARD_REINITIALIZED>");
+            if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                Serial.println("<DEBUG:SD_CARD_INSERTED>");
+                xSemaphoreGive(serialMutex);
+            }            if (initializeSDCard()) {
+                if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    Serial.println("<DEBUG:SD_CARD_REINITIALIZED>");
+                    Serial.println("<DEBUG:SD_REINIT_CONTINUING>");
+                    xSemaphoreGive(serialMutex);
+                }
+                
+                // Add a small delay to ensure SD card is fully stabilized
+                vTaskDelay(pdMS_TO_TICKS(100));
+                
+                if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    Serial.println("<DEBUG:SD_REINIT_DELAY_COMPLETE>");
+                    xSemaphoreGive(serialMutex);
+                }
+                
                 // Do NOT automatically start logging - wait for sensors to be ready and stable
                 // The main update() loop will handle starting logging when conditions are met
             } else {
-                Serial.println("<DEBUG:SD_CARD_REINIT_FAILED>");
-            }} else {
-            Serial.println("<DEBUG:SD_CARD_REMOVED>");
+                if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    Serial.println("<DEBUG:SD_CARD_REINIT_FAILED>");
+                    xSemaphoreGive(serialMutex);
+                }
+            }
+        } else {
+            if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                Serial.println("<DEBUG:SD_CARD_REMOVED>");
+                xSemaphoreGive(serialMutex);
+            }
             closeLogFile();
             
             // Report packets lost due to card removal (before clearing buffer)
             if (packet_buffer.count > 0) {
-                Serial.print("<DEBUG:SD_PACKETS_LOST:");
-                Serial.print(packet_buffer.count);
-                Serial.println(">");
+                if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    Serial.print("<DEBUG:SD_PACKETS_LOST:");
+                    Serial.print(packet_buffer.count);
+                    Serial.println(">");
+                    xSemaphoreGive(serialMutex);
+                }
             }
             
             // Clear buffer on card removal to prevent data loss/corruption
             packet_buffer.head = 0;
             packet_buffer.tail = 0;
             packet_buffer.count = 0;
-            
-            Serial.println("<DEBUG:SD_BUFFER_CLEARED>");
+              if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                Serial.println("<DEBUG:SD_BUFFER_CLEARED>");
+                xSemaphoreGive(serialMutex);
+            }
         }
     }
 }
 
 bool SDLogger::initializeSDCard() {
-    // Re-initialize SD card
-    if (!SD.begin(SD_CS_PIN)) {
-        return false;
+    // Re-initialize SD card with mutex protection and longer timeout
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
+        if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            Serial.println("<DEBUG:SD_INIT_STARTING>");
+            xSemaphoreGive(serialMutex);
+        }
+        
+        bool result = SD.begin(SD_CS_PIN);
+        
+        if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            if (result) {
+                Serial.println("<DEBUG:SD_INIT_SUCCESS>");
+            } else {
+                Serial.println("<DEBUG:SD_INIT_FAILED>");
+            }
+            xSemaphoreGive(serialMutex);
+        }
+        
+        xSemaphoreGive(sdMutex);
+        return result;
     }
     
-    return true;
+    // Failed to get mutex
+    if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        Serial.println("<DEBUG:SD_INIT_MUTEX_TIMEOUT>");
+        xSemaphoreGive(serialMutex);
+    }
+    return false;
 }
 
 void SDLogger::generateLogFilename(char* filename, size_t size) {
@@ -172,6 +256,7 @@ void SDLogger::generateLogFilename(char* filename, size_t size) {
     do {
         snprintf(filename, size, "LOG%05d.TXT", file_number);
         file_number++;
+        // Note: SD.exists() is called from within openLogFile which already has sdMutex protection
     } while (SD.exists(filename) && file_number < 100000);
 }
 
@@ -180,6 +265,15 @@ bool SDLogger::openLogFile() {
         return false;
     }
     
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            Serial.println("<DEBUG:SD_OPEN_MUTEX_TIMEOUT>");
+            xSemaphoreGive(serialMutex);
+        }
+        return false;
+    }
+    
+    // Generate filename while holding the mutex since it calls SD.exists()
     generateLogFilename(current_log_filename, sizeof(current_log_filename));
     
     log_file = SD.open(current_log_filename, FILE_WRITE);
@@ -201,16 +295,21 @@ bool SDLogger::openLogFile() {
         logging_active = true;
         packets_logged = 0;
         
+        xSemaphoreGive(sdMutex);
         return true;
     }
     
+    xSemaphoreGive(sdMutex);
     return false;
 }
 
 void SDLogger::closeLogFile() {
-    if (log_file) {
-        log_file.close();
-        logging_active = false;
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        if (log_file) {
+            log_file.close();
+            logging_active = false;
+        }
+        xSemaphoreGive(sdMutex);
     }
 }
 
@@ -251,6 +350,12 @@ void SDLogger::processWrites() {
         return;
     }
     
+    // Protect SD write operations with mutex
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        // Failed to get mutex quickly, skip this write cycle
+        return;
+    }
+    
     // Track write timing
     uint32_t write_start = micros();
     
@@ -264,7 +369,8 @@ void SDLogger::processWrites() {
             log_file.println(packet_data);
             log_file.flush();  // Ensure data is written
             packets_logged++;
-              // Trigger LED blink
+            
+            // Trigger LED blink
             led_blink_start_ms = millis();
             led_blink_active = true;
             if (sensor_manager) {
@@ -274,8 +380,10 @@ void SDLogger::processWrites() {
             // Update tail
             packet_buffer.tail = (packet_buffer.tail + 1) % PACKET_BUFFER_SIZE;
             packet_buffer.count--;
-  }
+        }
     }
+    
+    xSemaphoreGive(sdMutex);
 }
 
 void SDLogger::updateLED() {
@@ -306,13 +414,15 @@ void SDLogger::updateStatusLED() {
                 red_state = !red_state;
                 if (red_state) {
                     sensor_manager->setStatusLED(20, 0, 0);  // Dim red
-                    
-                    // Trigger buzzer beep when red LED comes on (SD card missing)
+                      // Trigger buzzer beep when red LED comes on (SD card missing)
                     if (!buzzer_active) {
                         buzzer_beep_start_ms = current_time;
                         buzzer_active = true;
                         digitalWrite(BUZZER_PIN, HIGH);
-                        Serial.println("<DEBUG:SD_CARD_MISSING_BUZZER_BEEP>");
+                        if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                            Serial.println("<DEBUG:SD_CARD_MISSING_BUZZER_BEEP>");
+                            xSemaphoreGive(serialMutex);
+                        }
                     }
                 } else {
                     sensor_manager->setStatusLED(0, 0, 0);   // Off

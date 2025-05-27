@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <SD.h>
 #include <RTClib.h>
+#include <STM32FreeRTOS.h>
 #include "Sensors.h"  // For SensorPacket definition
 
 // SD Card configuration
@@ -32,6 +33,11 @@ typedef struct {
 
 // Forward declaration
 class SensorManager;
+
+// External mutex for thread-safe Serial access
+extern SemaphoreHandle_t serialMutex;
+// External mutex for thread-safe SD card access
+extern SemaphoreHandle_t sdMutex;
 
 class SDLogger {
 private:
