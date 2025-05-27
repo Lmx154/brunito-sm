@@ -13,7 +13,9 @@ SDLogger::SDLogger(RTC_DS3231& rtc_ref, SensorManager* sm) :
     packets_logged(0),
     led_blink_start_ms(0),
     led_blink_active(false),
-    led_status_update_ms(0) {
+    led_status_update_ms(0),
+    buzzer_beep_start_ms(0),
+    buzzer_active(false) {
     
     // Initialize packet buffer
     memset(&packet_buffer, 0, sizeof(packet_buffer));
@@ -23,7 +25,13 @@ SDLogger::SDLogger(RTC_DS3231& rtc_ref, SensorManager* sm) :
 bool SDLogger::begin() {
     // Initialize SD card pins
     pinMode(SD_CS_PIN, OUTPUT);
-    digitalWrite(SD_CS_PIN, HIGH);    // Try to initialize SD card
+    digitalWrite(SD_CS_PIN, HIGH);
+    
+    // Initialize buzzer pin
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW);
+    
+    // Try to initialize SD card
     if (SD.begin(SD_CS_PIN)) {
         sd_card_present = true;
         
@@ -68,6 +76,7 @@ void SDLogger::update() {
     
     updateLED();
     updateStatusLED();
+    updateBuzzer();
 }
 
 void SDLogger::checkSDCard() {
@@ -297,6 +306,14 @@ void SDLogger::updateStatusLED() {
                 red_state = !red_state;
                 if (red_state) {
                     sensor_manager->setStatusLED(20, 0, 0);  // Dim red
+                    
+                    // Trigger buzzer beep when red LED comes on (SD card missing)
+                    if (!buzzer_active) {
+                        buzzer_beep_start_ms = current_time;
+                        buzzer_active = true;
+                        digitalWrite(BUZZER_PIN, HIGH);
+                        Serial.println("<DEBUG:SD_CARD_MISSING_BUZZER_BEEP>");
+                    }
                 } else {
                     sensor_manager->setStatusLED(0, 0, 0);   // Off
                 }
@@ -352,4 +369,16 @@ void SDLogger::formatSensorPacketCSV(const SensorPacket& packet, char* buffer, s
              packet.latitude, packet.longitude,
              packet.satellites,
              packet.temperature);
+}
+
+void SDLogger::updateBuzzer() {
+    // Handle buzzer beep duration
+    if (buzzer_active) {
+        uint32_t current_time = millis();
+        if (current_time - buzzer_beep_start_ms >= BUZZER_BEEP_DURATION_MS) {
+            // Turn off buzzer after beep duration
+            digitalWrite(BUZZER_PIN, LOW);
+            buzzer_active = false;
+        }
+    }
 }
