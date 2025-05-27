@@ -31,7 +31,9 @@ enum CommandType {
     CMD_NAVC_RESET_STATS,  // For resetting NAVC packet stats
     CMD_TEST_DEVICE,  // For generic device testing (only in TEST state)
     CMD_TEST_SERVO,   // For servo testing (only in TEST state)
-    CMD_TEST_ALTITUDE // For altitude-based servo and buzzer test (only in TEST state)
+    CMD_TEST_ALTITUDE, // For altitude-based servo and buzzer test (only in TEST state) - DEPRECATED - one-time test
+    CMD_ENABLE_ALTITUDE_TEST, // Enable background altitude test with threshold
+    CMD_DISABLE_ALTITUDE_TEST // Disable background altitude test
 };
 
 class StateManager {
@@ -53,13 +55,19 @@ private:
     SystemState pendingSoundState;
     int soundSequenceStep;
     
-    // Helper method to check inactivity timeout
+    // Altitude test variables
+    bool altitudeTestEnabled;
+    float altitudeTestThreshold;  // in meters
+      // Helper method to check inactivity timeout
     bool shouldAutoRecovery();
     
     // Buzzer sound utility functions
     void startBuzzerSound(SystemState state);
     void updateBuzzerSound();
     void stopBuzzer();
+    
+    // Altitude test utility functions
+    void checkBackgroundAltitudeTest();
     
 public:
     StateManager();

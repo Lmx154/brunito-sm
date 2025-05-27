@@ -54,7 +54,9 @@ StateManager::StateManager() :
     buzzerActive(false),
     currentBuzzerTone(0),
     pendingSoundState(STATE_IDLE),
-    soundSequenceStep(0) {
+    soundSequenceStep(0),
+    altitudeTestEnabled(false),
+    altitudeTestThreshold(0.0f) {
     // Initialize buzzer pin
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, LOW);
@@ -315,12 +317,91 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
                     
                     // Detach servo to prevent jitter
                     testServo.detach();
-                    
-                    FrameCodec::formatDebug(buffer, sizeof(buffer), "ALTITUDE_TEST_TRIGGERED");
+                      FrameCodec::formatDebug(buffer, sizeof(buffer), "ALTITUDE_TEST_TRIGGERED");
                 } else {
                     FrameCodec::formatDebug(buffer, sizeof(buffer), "ALTITUDE_BELOW_THRESHOLD");
                 }
                 
+                Serial.println(buffer);
+                return true;
+            }
+            break;
+            
+        case CMD_ENABLE_ALTITUDE_TEST:
+            // Enable background altitude test with specified threshold
+            if (isCommandAllowed(cmd)) {
+                // Default threshold (in meters) - can be overridden by command parameter
+                float threshold = 2.0f;
+                
+                // Check if we received a threshold parameter with the command
+                const char* params = strchr(cmdBuffer + 5, ':');
+                if (params) {
+                    // Skip the colon
+                    params++;
+                    
+                    // Look for threshold parameter
+                    if (strstr(params, "threshold=") != nullptr) {
+                        // Use same parsing logic as before
+                        char paramKey[16];
+                        int32_t thresholdCm;
+                        
+                        // Make a copy of the parameter string
+                        char paramCopy[64];
+                        strncpy(paramCopy, params, sizeof(paramCopy) - 1);
+                        paramCopy[sizeof(paramCopy) - 1] = '\0';
+                        
+                        // Find the end of the parameters
+                        char* end = strchr(paramCopy, ':');
+                        if (end) *end = '\0';
+                        end = strchr(paramCopy, '>');
+                        if (end) *end = '\0';
+                        
+                        // Use strtok to get threshold parameter
+                        char* token = strtok(paramCopy, ",");
+                        while (token != NULL) {
+                            char* equals = strchr(token, '=');
+                            if (equals) {
+                                // Extract key
+                                size_t keyLen = equals - token;
+                                if (keyLen < sizeof(paramKey)) {
+                                    strncpy(paramKey, token, keyLen);
+                                    paramKey[keyLen] = '\0';
+                                    
+                                    // If key is threshold, parse value
+                                    if (strcmp(paramKey, "threshold") == 0) {
+                                        thresholdCm = atol(equals + 1);
+                                        // Convert from cm to meters - no max limit
+                                        threshold = thresholdCm / 100.0f;
+                                        break;
+                                    }
+                                }
+                            }
+                            token = strtok(NULL, ",");
+                        }
+                    }
+                }
+                
+                // Enable the background altitude test
+                altitudeTestEnabled = true;
+                altitudeTestThreshold = threshold;
+                
+                char buffer[128];
+                snprintf(buffer, sizeof(buffer), "<DEBUG:ALTITUDE_TEST_ENABLED:THRESHOLD=%.2fm>", threshold);
+                Serial.println(buffer);
+                FrameCodec::formatDebug(buffer, sizeof(buffer), "ALTITUDE_TEST_ENABLED");
+                Serial.println(buffer);
+                return true;
+            }
+            break;
+            
+        case CMD_DISABLE_ALTITUDE_TEST:
+            // Disable background altitude test
+            if (isCommandAllowed(cmd)) {
+                altitudeTestEnabled = false;
+                altitudeTestThreshold = 0.0f;
+                
+                char buffer[64];
+                FrameCodec::formatDebug(buffer, sizeof(buffer), "ALTITUDE_TEST_DISABLED");
                 Serial.println(buffer);
                 return true;
             }
@@ -339,17 +420,24 @@ bool StateManager::isCommandAllowed(CommandType cmd) const {
     if (cmd == CMD_DISARM || cmd == CMD_QUERY || cmd == CMD_NAVC_RESET_STATS) {
         return true;
     }
-      // Check state-specific command permissions
-    switch (currentState) {        case STATE_IDLE:
+    
+    // Check state-specific command permissions
+    switch (currentState) {
+        case STATE_IDLE:
             // In IDLE, all commands except TEST_DEVICE, TEST_SERVO, and TEST_ALTITUDE are allowed
-            return (cmd != CMD_TEST_DEVICE && cmd != CMD_TEST_SERVO && cmd != CMD_TEST_ALTITUDE);
-              case STATE_TEST:
-            // In TEST, only TEST, QUERY, ARM, TEST_DEVICE, TEST_SERVO, and TEST_ALTITUDE are allowed
-            return (cmd == CMD_TEST || cmd == CMD_ARM || cmd == CMD_TEST_DEVICE || cmd == CMD_TEST_SERVO || cmd == CMD_TEST_ALTITUDE);
+            return (cmd != CMD_TEST_DEVICE && cmd != CMD_TEST_SERVO && cmd != CMD_TEST_ALTITUDE && 
+                    cmd != CMD_ENABLE_ALTITUDE_TEST && cmd != CMD_DISABLE_ALTITUDE_TEST);
+            
+        case STATE_TEST:
+            // In TEST, only TEST, QUERY, ARM, TEST_DEVICE, TEST_SERVO, TEST_ALTITUDE and altitude test commands are allowed
+            return (cmd == CMD_TEST || cmd == CMD_ARM || cmd == CMD_TEST_DEVICE || cmd == CMD_TEST_SERVO || 
+                    cmd == CMD_TEST_ALTITUDE || cmd == CMD_ENABLE_ALTITUDE_TEST || cmd == CMD_DISABLE_ALTITUDE_TEST);
             
         case STATE_ARMED:
             // In ARMED, all commands except TEST, TEST_DEVICE, TEST_SERVO, and TEST_ALTITUDE are allowed
-            return (cmd != CMD_TEST && cmd != CMD_TEST_DEVICE && cmd != CMD_TEST_SERVO && cmd != CMD_TEST_ALTITUDE);
+            // Note: Background altitude test can run in ARMED state, but enabling/disabling is not allowed
+            return (cmd != CMD_TEST && cmd != CMD_TEST_DEVICE && cmd != CMD_TEST_SERVO && cmd != CMD_TEST_ALTITUDE &&
+                    cmd != CMD_ENABLE_ALTITUDE_TEST && cmd != CMD_DISABLE_ALTITUDE_TEST);
             
         case STATE_RECOVERY:
             // In RECOVERY, only FIND_ME is allowed (DISARM already handled)
@@ -369,6 +457,9 @@ void StateManager::updateState() {
         FrameCodec::formatDebug(buffer, sizeof(buffer), "AUTO_RECOVERY_TRIGGERED");
         Serial.println(buffer);
     }
+    
+    // Check background altitude test if enabled
+    checkBackgroundAltitudeTest();
     
     // Update buzzer state (non-blocking sound handling)
     updateBuzzerSound();
@@ -421,6 +512,56 @@ const char* StateManager::getStateStringFromEnum(SystemState state) const {
 
 const char* StateManager::getStateString() const {
     return getStateStringFromEnum(currentState);
+}
+
+// Check background altitude test and trigger servo sequence if threshold reached
+void StateManager::checkBackgroundAltitudeTest() {
+    // Only check if altitude test is enabled
+    if (!altitudeTestEnabled) {
+        return;
+    }
+    
+    // Get the current altitude from the NAVC's latest packet
+    const SensorPacket& packet = uartManager.getLatestPacket();
+    
+    // Get altitude in meters (packet.altitude is in cm)
+    float altitudeMeters = packet.altitude / 100.0f;
+    
+    // Check if above threshold
+    if (altitudeMeters >= altitudeTestThreshold) {
+        // Threshold reached! Execute servo sequence
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "<DEBUG:BACKGROUND_ALTITUDE_TEST_TRIGGERED:ALT=%.2fm,THRESHOLD=%.2fm>", 
+                 altitudeMeters, altitudeTestThreshold);
+        Serial.println(buffer);
+        
+        // Sound the buzzer
+        toneMaxVolume(BUZZER_PIN, TONE_TEST);
+        delay(500); // Buzzer sound duration
+        noToneMaxVolume(BUZZER_PIN);
+        
+        // Move the servo to 90 degrees and back
+        Servo testServo;
+        testServo.attach(SERVO_PIN);
+        
+        // Move to 90 degrees
+        testServo.write(90);
+        delay(500); // Wait for servo to reach position
+        
+        // Move back to 0 degrees
+        testServo.write(0);
+        delay(500); // Wait for servo to reach position
+        
+        // Detach servo to prevent jitter
+        testServo.detach();
+        
+        // Disable the altitude test after triggering (one-time use)
+        altitudeTestEnabled = false;
+        altitudeTestThreshold = 0.0f;
+        
+        FrameCodec::formatDebug(buffer, sizeof(buffer), "BACKGROUND_ALTITUDE_TEST_COMPLETE_DISABLED");
+        Serial.println(buffer);
+    }
 }
 
 // Start a buzzer sound pattern for the specific state

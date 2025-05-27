@@ -64,32 +64,52 @@ Below is the complete list of commands, including their descriptions, allowed st
   - `<CMD:ALTITUDE_TEST>` - Uses default 2m threshold
   - `<CMD:ALTITUDE_TEST:threshold=1000>` - Sets threshold to 10m (33ft)
 
-### 8. `<CMD:NAVC_RESET_STATS>`
+### 9. `<CMD:ENABLE_ALTITUDE_TEST>`
+- **Description**: Enables background altitude monitoring that runs continuously in TEST state. When altitude exceeds the specified threshold, automatically triggers servo sequence (move to 90°, then back to 0°) and then disables itself.
+- **Parameters**:
+  - `threshold` (required): The altitude threshold in centimeters (minimum 1cm, no upper limit).
+- **Behavior**: 
+  - Runs in background until altitude threshold is reached
+  - Automatically executes servo test sequence when triggered
+  - Self-disables after execution
+  - OFF by default at startup
+- **Allowed States**: TEST only
+- **Examples**: 
+  - `<CMD:ENABLE_ALTITUDE_TEST:threshold=1000>` - Monitor for 10m altitude
+  - `<CMD:ENABLE_ALTITUDE_TEST:threshold=50000>` - Monitor for 500m altitude
+
+### 10. `<CMD:DISABLE_ALTITUDE_TEST>`
+- **Description**: Disables the background altitude monitoring system if currently active.
+- **Parameters**: None
+- **Allowed States**: TEST only
+- **Example**: `<CMD:DISABLE_ALTITUDE_TEST>`
+
+### 11. `<CMD:NAVC_RESET_STATS>`
 - **Description**: Resets packet statistics counters on the Navigation Controller (NAVC), forwarded via the FC.
 - **Allowed States**: All (IDLE, TEST, ARMED, RECOVERY)
 - **Example**: `<CMD:NAVC_RESET_STATS>`
 
-### 9. `<CMD:LORA_RESET_STATS>`
+### 12. `<CMD:LORA_RESET_STATS>`
 - **Description**: Resets LoRa communication statistics counters (e.g., packets sent, received, lost).
 - **Allowed States**: All (IDLE, TEST, ARMED, RECOVERY)
 - **Example**: `<CMD:LORA_RESET_STATS>`
 
-### 10. `<CMD:LORA_STATS>`
+### 13. `<CMD:LORA_STATS>`
 - **Description**: Requests detailed LoRa communication statistics, including RSSI, SNR, and packet counts.
 - **Allowed States**: All (IDLE, TEST, ARMED, RECOVERY)
 - **Example**: `<CMD:LORA_STATS>`
 
-### 11. `<CMD:TELEM_STATUS>`
+### 14. `<CMD:TELEM_STATUS>`
 - **Description**: Requests the current telemetry status, including system state, telemetry state, rate, and RSSI.
 - **Allowed States**: All (IDLE, TEST, ARMED, RECOVERY)
 - **Example**: `<CMD:TELEM_STATUS>`
 
-### 12. `<CMD:TEST>`
+### 15. `<CMD:TEST>`
 - **Description**: Performs testing functions in TEST mode. Currently enables the buzzer on the NAVC board (pin A0) for testing purposes. Future enhancements will add more test functionality.
 - **Allowed States**: TEST only
 - **Example**: `<CMD:TEST>`
 
-### 13. `<CMD:SERVO_TEST>`
+### 16. `<CMD:SERVO_TEST>`
 - **Description**: Tests the servo on pin PB14 of the Flight Controller by moving it to 90 degrees and back to 0 degrees.
 - **Allowed States**: TEST only
 - **Example**: `<CMD:SERVO_TEST>`
