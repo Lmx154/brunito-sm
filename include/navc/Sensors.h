@@ -50,6 +50,27 @@ typedef struct {
 // Forward declaration for Test class
 class SensorTest;
 
+// Low-pass filter class for sensor noise reduction
+class LowPassFilter {
+private:
+    float alpha;
+    float filteredValue;
+    bool initialized;
+public:
+    LowPassFilter(float smoothingFactor) : 
+        alpha(smoothingFactor), filteredValue(0), initialized(false) {}
+    
+    float update(float newValue) {
+        if (!initialized) {
+            filteredValue = newValue;
+            initialized = true;
+        } else {
+            filteredValue = alpha * newValue + (1.0f - alpha) * filteredValue;
+        }
+        return filteredValue;
+    }
+};
+
 // Class to manage sensors
 class SensorManager {
     friend class SensorTest; // Allow Test class to access private members
@@ -70,6 +91,18 @@ private:// Hardware drivers
     float temperature;   // in °C
     float pressure;      // in Pa
     float altitude;      // in m
+    
+    // Low-pass filters for sensor noise reduction
+    LowPassFilter accelFilterX{0.2f}; // α = 0.2
+    LowPassFilter accelFilterY{0.2f};
+    LowPassFilter accelFilterZ{0.2f};
+    LowPassFilter gyroFilterX{0.2f};
+    LowPassFilter gyroFilterY{0.2f};
+    LowPassFilter gyroFilterZ{0.2f};
+    LowPassFilter magFilterX{0.1f}; // α = 0.1 - more smoothing due to EMI noise
+    LowPassFilter magFilterY{0.1f};
+    LowPassFilter magFilterZ{0.1f};
+    LowPassFilter altitudeFilter{0.05f}; // α = 0.05 - heavy smoothing for stable altitude
     
     // RTC data
     uint8_t rtcYear;     // Last two digits of year

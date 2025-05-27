@@ -330,17 +330,38 @@ void SensorManager::processGPS() {
 }
 
 void SensorManager::readAccelGyro() {
-    // Read accelerometer data in m/s^2
+    // Read accelerometer data in m/s^2 and apply low-pass filtering
     accel->readSensor();
-    accelData[0] = accel->getAccelX_mss();
-    accelData[1] = accel->getAccelY_mss();
-    accelData[2] = accel->getAccelZ_mss();
+    float rawX = accel->getAccelX_mss();
+    float rawY = accel->getAccelY_mss();
+    float rawZ = accel->getAccelZ_mss();
     
-    // Read gyroscope data in rad/s
+    // Apply EMA low-pass filters to reduce noise
+    accelData[0] = accelFilterX.update(rawX);
+    accelData[1] = accelFilterY.update(rawY);
+    accelData[2] = accelFilterZ.update(rawZ);
+    
+    #if DEBUG_SENSORS
+    // Debug output to compare raw vs filtered values (only every 100 samples to reduce spam)
+    static int debugCounter = 0;
+    if (++debugCounter >= 100) {
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "<DEBUG:ACCEL_RAW:%.2f,%.2f,%.2f,FILTERED:%.2f,%.2f,%.2f>",
+                rawX, rawY, rawZ, accelData[0], accelData[1], accelData[2]);
+        Serial.println(buffer);
+        debugCounter = 0;
+    }
+    #endif
+      // Read gyroscope data in rad/s and apply low-pass filtering
     gyro->readSensor();
-    gyroData[0] = gyro->getGyroX_rads();
-    gyroData[1] = gyro->getGyroY_rads();
-    gyroData[2] = gyro->getGyroZ_rads();
+    float rawGX = gyro->getGyroX_rads();
+    float rawGY = gyro->getGyroY_rads();
+    float rawGZ = gyro->getGyroZ_rads();
+    
+    // Apply EMA low-pass filters to reduce noise
+    gyroData[0] = gyroFilterX.update(rawGX);
+    gyroData[1] = gyroFilterY.update(rawGY);
+    gyroData[2] = gyroFilterZ.update(rawGZ);
 }
 
 void SensorManager::readMagnetometer() {
@@ -396,18 +417,31 @@ void SensorManager::readMagnetometer() {
         }
         return;
     }
-    
-    // Valid reading - reset fail counter and store data
+      // Valid reading - reset fail counter and apply low-pass filtering
     consecutiveFailCount = 0;
     
-    magData[0] = mag.mag_data.x;
-    magData[1] = mag.mag_data.y;
-    magData[2] = mag.mag_data.z;
+    // Apply EMA low-pass filters to reduce EMI noise
+    magData[0] = magFilterX.update(mag.mag_data.x);
+    magData[1] = magFilterY.update(mag.mag_data.y);
+    magData[2] = magFilterZ.update(mag.mag_data.z);
     
-    // Cache valid readings for fallback use
-    SensorManager_lastValidX = mag.mag_data.x;
-    SensorManager_lastValidY = mag.mag_data.y;
-    SensorManager_lastValidZ = mag.mag_data.z;
+    #if DEBUG_SENSORS
+    // Debug output to compare raw vs filtered magnetometer values (only every 100 samples to reduce spam)
+    static int debugMagCounter = 0;
+    if (++debugMagCounter >= 100) {
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "<DEBUG:MAG_RAW:%.0f,%.0f,%.0f,FILTERED:%.0f,%.0f,%.0f>",
+                (float)mag.mag_data.x, (float)mag.mag_data.y, (float)mag.mag_data.z,
+                magData[0], magData[1], magData[2]);
+        Serial.println(buffer);
+        debugMagCounter = 0;
+    }
+    #endif
+    
+    // Cache filtered readings for fallback use
+    SensorManager_lastValidX = static_cast<int16_t>(magData[0]);
+    SensorManager_lastValidY = static_cast<int16_t>(magData[1]);
+    SensorManager_lastValidZ = static_cast<int16_t>(magData[2]);
     SensorManager_hasValidReadingEver = true;
 }
 
@@ -440,22 +474,27 @@ void SensorManager::readBarometer() {
             Serial.println(buffer);
             #endif
         }
-        
-        if (referenceAltitudeSet) {
-            // Calculate relative altitude (difference from reference point)
-            altitude = currentAltitude - referenceAltitude;
+          if (referenceAltitudeSet) {
+            // Calculate relative altitude and apply low-pass filtering for stability
+            float relativeAltitude = currentAltitude - referenceAltitude;
+            altitude = altitudeFilter.update(relativeAltitude);
         } else {
-            // Before reference is set, use absolute altitude
+            // Before reference is set, use absolute altitude (no filtering during initialization)
             altitude = currentAltitude;
         }
-        
-        #if DEBUG_SENSORS
-        // Debug altitude values periodically
+          #if DEBUG_SENSORS
+        // Debug altitude values periodically (raw vs filtered)
         static unsigned long lastAltDebugTime = 0;
         if (millis() - lastAltDebugTime > 5000) {
             char buffer[128];
-            snprintf(buffer, sizeof(buffer), "<DEBUG:ALTITUDE:current=%.2f,ref=%.2f,relative=%.2f>", 
-                     currentAltitude, referenceAltitude, altitude);
+            if (referenceAltitudeSet) {
+                float rawRelative = currentAltitude - referenceAltitude;
+                snprintf(buffer, sizeof(buffer), "<DEBUG:ALTITUDE:raw_rel=%.2f,filtered=%.2f,ref=%.2f>", 
+                         rawRelative, altitude, referenceAltitude);
+            } else {
+                snprintf(buffer, sizeof(buffer), "<DEBUG:ALTITUDE:current=%.2f,ref=NOT_SET,relative=%.2f>", 
+                         currentAltitude, altitude);
+            }
             Serial.println(buffer);
             lastAltDebugTime = millis();
         }
@@ -574,7 +613,7 @@ void SensorManager::processSensorData() {
         #endif
     } else {
         // Use actual magnetometer values, BMM150 values are already in µT
-        // Convert to 0.1µT by multiplying by 10 and cast to int16
+        // Convert to 0.1µT by multiplying with 10 and cast to int16
         currentPacket.magX = static_cast<int16_t>(magData[0]); 
         currentPacket.magY = static_cast<int16_t>(magData[1]);
         currentPacket.magZ = static_cast<int16_t>(magData[2]);
