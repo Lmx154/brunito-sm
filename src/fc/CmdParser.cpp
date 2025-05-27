@@ -85,11 +85,8 @@ bool CmdParser::parseAndExecute() {
         } else if (cmd == CMD_ARM) {
             sendAck(true, "ARMED");
         } else if (cmd == CMD_ENTER_TEST) {
-            sendAck(true, "TEST");
-        } else if (cmd == CMD_ENTER_RECOVERY) {
+            sendAck(true, "TEST");        } else if (cmd == CMD_ENTER_RECOVERY) {
             sendAck(true, "RECOVERY");
-        } else if (cmd == CMD_FIND_ME) {
-            sendAck(true, "FIND_ME_ACTIVATED");
         } else if (cmd == CMD_TEST) {
             sendAck(true, "TEST_SUCCESS");
         } else if (cmd == CMD_QUERY) {
@@ -132,10 +129,8 @@ CommandType CmdParser::getCommandType(const char* cmdStr) {    if (strcmp(cmdStr
     if (strcmp(cmdStr, "TEST") == 0) return CMD_TEST_DEVICE; // Map "TEST" to our new command
     if (strcmp(cmdStr, "SERVO_TEST") == 0) return CMD_TEST_SERVO; // New servo test command
     if (strcmp(cmdStr, "ALTITUDE_TEST") == 0) return CMD_TEST_ALTITUDE; // New altitude-based test command
-    if (strcmp(cmdStr, "ENABLE_ALTITUDE_TEST") == 0) return CMD_ENABLE_ALTITUDE_TEST; // New background altitude test command
-    if (strcmp(cmdStr, "DISABLE_ALTITUDE_TEST") == 0) return CMD_DISABLE_ALTITUDE_TEST; // Disable background altitude test command
+    if (strcmp(cmdStr, "ENABLE_ALTITUDE_TEST") == 0) return CMD_ENABLE_ALTITUDE_TEST; // New background altitude test command    if (strcmp(cmdStr, "DISABLE_ALTITUDE_TEST") == 0) return CMD_DISABLE_ALTITUDE_TEST; // Disable background altitude test command
     if (strcmp(cmdStr, "QUERY") == 0) return CMD_QUERY;
-    if (strcmp(cmdStr, "FIND_ME") == 0) return CMD_FIND_ME;
     if (strncmp(cmdStr, "CONTROL", 7) == 0) return CMD_CONTROL;
     if (strcmp(cmdStr, "NAVC_RESET_STATS") == 0) return CMD_NAVC_RESET_STATS;
     

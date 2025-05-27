@@ -26,21 +26,11 @@ Below is the complete list of commands, including their descriptions, allowed st
 - **Example**: `<CMD:ENTER_TEST>`
 
 ### 4. `<CMD:ENTER_RECOVERY>`
-- **Description**: Enters RECOVERY mode, activating location services (e.g., buzzer) and sending GPS-only telemetry at 1 Hz.
+- **Description**: Enters RECOVERY mode, automatically activating a loud buzzer every 3 seconds and sending GPS-only telemetry at 1 Hz.
 - **Allowed States**: ARMED
 - **Example**: `<CMD:ENTER_RECOVERY>`
 
 ### 5. `<CMD:QUERY>`
-- **Description**: Queries the FC's current state, returning a response like `<CMD_ACK:OK:state>`.
-- **Allowed States**: All (IDLE, TEST, ARMED, RECOVERY)
-- **Example**: `<CMD:QUERY>`
-
-### 6. `<CMD:FIND_ME>`
-- **Description**: Activates the buzzer and/or LED to aid in locating the vehicle, typically in RECOVERY mode.
-- **Allowed States**: RECOVERY
-- **Example**: `<CMD:FIND_ME>`
-
-### 7. `<CMD:CONTROL:params>`
 - **Description**: Controls actuators such as servos or buzzers. Parameters are specified as `key=value` pairs, separated by commas if multiple.
 - **Supported Parameters**:
   - `servo=value` (0–180): Sets servo position in degrees.

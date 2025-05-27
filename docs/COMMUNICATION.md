@@ -120,7 +120,6 @@ Example:
 | ENTER_TEST          | None                | IDLE                | Enter TEST mode                |
 | ENTER_RECOVERY      | None                | ARMED               | Enter RECOVERY mode            |
 | QUERY               | None                | All                 | Query current state            |
-| FIND_ME             | None                | RECOVERY            | Activate buzzer/LED            |
 | CONTROL             | servo=0-180,buzzer=0/1 | All except TEST | Control actuators           |
 | TEST                | None                | TEST                | Test buzzer on NAVC            |
 | SERVO_TEST          | None                | TEST                | Test servo movement            |

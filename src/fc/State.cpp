@@ -438,10 +438,9 @@ bool StateManager::isCommandAllowed(CommandType cmd) const {
             // Note: Background altitude test can run in ARMED state, but enabling/disabling is not allowed
             return (cmd != CMD_TEST && cmd != CMD_TEST_DEVICE && cmd != CMD_TEST_SERVO && cmd != CMD_TEST_ALTITUDE &&
                     cmd != CMD_ENABLE_ALTITUDE_TEST && cmd != CMD_DISABLE_ALTITUDE_TEST);
-            
-        case STATE_RECOVERY:
-            // In RECOVERY, only FIND_ME is allowed (DISARM already handled)
-            return (cmd == CMD_FIND_ME);
+              case STATE_RECOVERY:
+            // In RECOVERY, no commands are allowed except the always-allowed ones (DISARM already handled)
+            return false;
             
         default:
             return false;
@@ -679,21 +678,31 @@ void StateManager::updateBuzzerSound() {
                     currentBuzzerTone = frequencies[soundSequenceStep];
                 }
                 break;
-                
-            case STATE_RECOVERY:                
-                // RECOVERY: Maximum volume SOS pattern
-                // Optimized for loudness rather than traditional SOS
-                if (soundSequenceStep < 9) {
-                    // Use the most resonant frequencies for maximum volume
+                  case STATE_RECOVERY:                
+                // RECOVERY: Continuous loud buzzing every 3 seconds
+                // Simplified to just continuous loud beeps for maximum audibility
+                if (soundSequenceStep < 3) {
+                    // Three loud beeps every 3 seconds
                     int baseFreq = 3000; // Maximum volume frequency for most passive buzzers
-                    // Short beeps for steps 0-2 and 6-8, long beeps for 3-5
-                    int duration = (soundSequenceStep >= 3 && soundSequenceStep <= 5) ? 600 : 250;
+                    int duration = 200; // Short, loud beeps
                     
                     toneMaxVolume(BUZZER_PIN, baseFreq); // Max volume
                     buzzerActive = true;
                     buzzerStartTime = currentTime;
                     buzzerDuration = duration;
                     currentBuzzerTone = baseFreq;
+                } else {
+                    // After 3 beeps, wait 3 seconds before repeating
+                    // Check if 3 seconds have passed since the last beep ended
+                    if (currentTime - buzzerStartTime >= 3000) {
+                        soundSequenceStep = 0; // Reset sequence to repeat
+                        // Immediate restart - no delay
+                        toneMaxVolume(BUZZER_PIN, 3000);
+                        buzzerActive = true;
+                        buzzerStartTime = currentTime;
+                        buzzerDuration = 200;
+                        currentBuzzerTone = 3000;
+                    }
                 }
                 break;
                 
