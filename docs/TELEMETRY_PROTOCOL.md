@@ -23,40 +23,66 @@ The Ground Station (GS) is the primary interface for computer-based telemetry pa
 
 ## Data Structures
 
-### 1. NAVC Sensor Packet (Binary - 46 bytes)
+### 1. NAVC Sensor Packet (Binary - 44 bytes)
 
 The core sensor data structure transmitted from NAVC to FC:
 
 ```cpp
-struct SensorPacket {
-    uint32_t timestamp;        // Milliseconds since boot (4 bytes)
+typedef struct {
+    uint16_t packetId;        // Packet sequence number (2 bytes)
+    uint32_t timestamp;       // Milliseconds since boot (4 bytes)
+    int32_t altitude;         // Altitude in cm (4 bytes)
     
-    // Accelerometer data (12 bytes) - Pre-filtered with EMA α=0.2
-    float accel_x;            // m/s² (4 bytes)
-    float accel_y;            // m/s² (4 bytes)
-    float accel_z;            // m/s² (4 bytes)
+    // Accelerometer data (6 bytes) - Pre-filtered with EMA α=0.2
+    int16_t accelX;           // mg (milli-g) (2 bytes)
+    int16_t accelY;           // mg (milli-g) (2 bytes)
+    int16_t accelZ;           // mg (milli-g) (2 bytes)
     
-    // Gyroscope data (12 bytes) - Pre-filtered with EMA α=0.2
-    float gyro_x;             // rad/s (4 bytes)
-    float gyro_y;             // rad/s (4 bytes)
-    float gyro_z;             // rad/s (4 bytes)
+    // Gyroscope data (6 bytes) - Pre-filtered with EMA α=0.2
+    int16_t gyroX;            // 0.01°/s (centidegrees/sec) (2 bytes)
+    int16_t gyroY;            // 0.01°/s (centidegrees/sec) (2 bytes)
+    int16_t gyroZ;            // 0.01°/s (centidegrees/sec) (2 bytes)
     
-    // Magnetometer data (12 bytes) - Pre-filtered with EMA α=0.1
-    float mag_x;              // µT (4 bytes)
-    float mag_y;              // µT (4 bytes)
-    float mag_z;              // µT (4 bytes)
+    // Magnetometer data (6 bytes) - Pre-filtered with EMA α=0.1
+    int16_t magX;             // 0.1µT (decisla) (2 bytes)
+    int16_t magY;             // 0.1µT (decisla) (2 bytes)
+    int16_t magZ;             // 0.1µT (decisla) (2 bytes)
     
-    // Barometric data (4 bytes) - Pre-filtered with EMA α=0.05
-    float pressure;           // hPa (4 bytes)
+    // GPS data (8 bytes)
+    int32_t latitude;         // degrees×10⁷ (4 bytes)
+    int32_t longitude;        // degrees×10⁷ (4 bytes)
+    
+    // RTC data (6 bytes)
+    uint8_t year;             // Last two digits of year (1 byte)
+    uint8_t month;            // Month (1-12) (1 byte)
+    uint8_t day;              // Day (1-31) (1 byte)
+    uint8_t hour;             // Hour (0-23) (1 byte)
+    uint8_t minute;           // Minute (0-59) (1 byte)
+    uint8_t second;           // Second (0-59) (1 byte)
+    
+    // Additional data (3 bytes)
+    uint8_t satellites;       // Number of GPS satellites (1 byte)
+    int16_t temperature;      // Temperature in °C (whole degrees) (2 bytes)
     
     // CRC validation (2 bytes)
     uint16_t crc16;           // CRC16-CCITT checksum (2 bytes)
-};
+} __attribute__((packed)) SensorPacket;
 ```
 
-**Total Size**: 46 bytes  
+**Total Size**: 44 bytes
 **Transmission Rate**: 50Hz (NAVC → FC)  
 **Validation**: CRC16-CCITT with polynomial 0x1021, initial value 0xFFFF
+
+#### Data Scaling and Units
+
+**All sensor values are stored as integers with specific scaling factors for efficient transmission:**
+
+- **Accelerometer**: Values in milli-g (mg), where 1000mg = 1g = 9.81m/s²
+- **Gyroscope**: Values in centidegrees per second (0.01°/s), where 100 = 1°/s
+- **Magnetometer**: Values in decisla (0.1µT), where 10 = 1µT
+- **Altitude**: Values in centimeters (cm), where 100 = 1 meter
+- **GPS**: Latitude/longitude in degrees×10⁷, where 10,000,000 = 1 degree
+- **Temperature**: Whole degrees Celsius (rounded to nearest integer)
 
 #### 📊 **Important: Pre-Applied Low-Pass Filtering**
 
@@ -276,26 +302,37 @@ NAK:UNKNOWN_COMMAND:Command_not_recognized
 
 The FC manages the following states:
 - `IDLE`: Ground idle state
-- `ARMED`: Ready for flight
-- `ASCENT`: Active flight upward
-- `DESCENT`: Controlled descent
+- `TEST`: Pre-flight diagnostics mode
+- `ARMED`: Ready for flight state
 - `RECOVERY`: Recovery mode (parachute deployed)
-- `LANDED`: Safe landing detected
 
 ### Telemetry Generation
 
-#### ARMED State Telemetry (10Hz)
+#### ARMED State Telemetry (1-10Hz adaptive)
 ```cpp
-// Full telemetry packet
-sprintf(buffer, "TELEM:T=%lu,LAT=%.6f,LON=%.6f,ALT=%.1f,VEL=%.1f,STATE=%s",
-        timestamp, latitude, longitude, altitude, velocity, state_name);
+// Full telemetry packet using actual SensorPacket fields
+snprintf(buffer, sizeof(buffer), 
+         "<%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%d>",
+         datetime,           // MM/DD/YYYY,HH:MM:SS formatted string
+         altStr,             // Altitude in meters with 2 decimal places
+         packet.accelX, packet.accelY, packet.accelZ,    // mg values
+         packet.gyroX, packet.gyroY, packet.gyroZ,       // 0.01°/s values
+         packet.magX, packet.magY, packet.magZ,          // 0.1µT values
+         packet.latitude, packet.longitude,              // degrees×10⁷
+         packet.satellites,                              // satellite count
+         packet.temperature);                            // °C
 ```
 
 #### RECOVERY State Telemetry (1Hz)
 ```cpp
-// GPS-only telemetry for recovery
-sprintf(buffer, "RECOVERY:T=%lu,LAT=%.6f,LON=%.6f,ALT=%.1f",
-        timestamp, latitude, longitude, altitude);
+// GPS-only telemetry for recovery using actual packet format
+snprintf(buffer, sizeof(buffer), "<%s,%ld,%ld,%s,%u,%d>",
+         datetime,              // MM/DD/YYYY,HH:MM:SS formatted string
+         packet.latitude,       // degrees×10⁷
+         packet.longitude,      // degrees×10⁷ 
+         altStr,                // Altitude in meters with 2 decimal places
+         packet.satellites,     // satellite count
+         packet.temperature);   // °C
 ```
 
 ### UART Communication (FC ↔ NAVC)
@@ -400,8 +437,8 @@ def parse_brunito_telemetry(data_line):
 | Acceleration | -20g | +20g | > 200 m/s² | Total acceleration (EMA filtered, α=0.2) |
 | Gyroscope | -2000°/s | +2000°/s | > 2000°/s | Angular rates (EMA filtered, α=0.2) |
 | Magnetometer | -100µT | +100µT | All zeros | Earth's field ~25-65µT (EMA filtered, α=0.1) |
-| Latitude | -90° | +90° | 0.0000000° | GPS coordinate |
-| Longitude | -180° | +180° | 0.0000000° | GPS coordinate |
+| Latitude | -90° | +90° | 0.0000001° or 0.000001° | GPS coordinate (1 or 10 when no fix) |
+| Longitude | -180° | +180° | 0.0000001° or 0.000001° | GPS coordinate (1 or 10 when no fix) |
 | Satellites | 0 | 12 | >12 | GPS satellites in view |
 | Temperature | -40°C | +85°C | <-50°C or >100°C | Operating range |
 
@@ -414,10 +451,9 @@ def parse_brunito_telemetry(data_line):
 #### Data Quality Indicators
 ```python
 def assess_data_quality(parsed_data):
-    quality = {
-        'gps_valid': parsed_data['gps_satellites'] >= 4 and 
-                    parsed_data['latitude_deg'] != 0.0 and 
-                    parsed_data['longitude_deg'] != 0.0,
+    quality = {        'gps_valid': parsed_data['gps_satellites'] >= 4 and 
+                    abs(parsed_data['latitude_deg']) > 0.00001 and 
+                    abs(parsed_data['longitude_deg']) > 0.00001,
         'imu_valid': abs(parsed_data['accel_x_mps2']) < 200 and
                     abs(parsed_data['accel_y_mps2']) < 200 and
                     abs(parsed_data['accel_z_mps2']) < 200,
@@ -435,7 +471,7 @@ def assess_data_quality(parsed_data):
 - **TEST State**: 0.5Hz
 
 #### Missing Data Handling
-- **GPS coordinates = 0**: No GPS fix available
+- **GPS coordinates near zero**: Values of 1 or 10 (×10⁻⁷ degrees) indicate no GPS fix available
 - **Magnetometer all zeros**: Sensor not initialized or failed
 - **Temperature extremes**: Sensor fault or environmental limits
 - **Excessive acceleration**: Possible sensor saturation
@@ -445,19 +481,22 @@ def assess_data_quality(parsed_data):
 def detect_flight_phase(altitude_history, accel_history):
     """
     Detect flight phase based on telemetry data
+    Note: This is application-level flight phase detection, not FC states.
+    Actual FC states are: IDLE, TEST, ARMED, RECOVERY
     """
     current_alt = altitude_history[-1]
     alt_rate = (altitude_history[-1] - altitude_history[-5]) / 5.0  # m/s over 5 samples
     accel_mag = sqrt(sum(a**2 for a in accel_history[-1]))
     
+    # Application-level flight phase analysis (not FC state machine)
     if alt_rate > 10:
-        return "ASCENT"
+        return "ASCENT_PHASE"    # Flight analysis phase
     elif alt_rate < -5 and current_alt > 100:
-        return "DESCENT"
+        return "DESCENT_PHASE"   # Flight analysis phase
     elif accel_mag < 2 and current_alt < 50:
-        return "RECOVERY"
+        return "LANDED_PHASE"    # Flight analysis phase
     else:
-        return "ARMED"
+        return "CRUISE_PHASE"    # Flight analysis phase
 ```
 
 ## Error Handling and Validation
