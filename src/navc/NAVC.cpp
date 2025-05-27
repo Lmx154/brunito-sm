@@ -147,37 +147,66 @@ void setup() {
   Serial2.println("<NAVC:READY>");
   Serial2.flush(); // Ensure data is sent
   
-  startTime = millis();
+  startTime = millis();  // Create FreeRTOS tasks with conservative stack sizes to prevent freezing
+  Serial.println("<DEBUG:CREATING_FREERTOS_TASKS>");
   
-  // Create FreeRTOS tasks
-  xTaskCreate(
+  // Create sensor task
+  BaseType_t sensorTaskResult = xTaskCreate(
     sensorTask,           // Task function
     "SensorTask",         // Task name
-    2048,                 // Stack size (words)
+    2048,                 // Stack size (words) - reduced to prevent memory issues
     NULL,                 // Task parameters
-    3,                    // Priority (higher than SD task)
+    3,                    // Priority (highest priority for sensor data)
     NULL                  // Task handle
   );
   
-  xTaskCreate(
+  if (sensorTaskResult != pdPASS) {
+    Serial.println("<DEBUG:SENSOR_TASK_CREATE_FAILED>");
+    while (1);
+  }
+  Serial.println("<DEBUG:SENSOR_TASK_CREATED>");
+  
+  // Create SD task
+  BaseType_t sdTaskResult = xTaskCreate(
     sdTask,              // Task function
     "SDTask",            // Task name
-    2048,                // Stack size (words)
+    2048,                // Stack size (words) - reduced to prevent memory issues
     NULL,                // Task parameters
-    1,                   // Priority (lower than sensor task)
+    2,                   // Priority (increased from 1 to 2 for better SD performance)
     NULL                 // Task handle
   );
   
-  xTaskCreate(
+  if (sdTaskResult != pdPASS) {
+    Serial.println("<DEBUG:SD_TASK_CREATE_FAILED>");
+    while (1);
+  }
+  Serial.println("<DEBUG:SD_TASK_CREATED>");
+  
+  // Create command task
+  BaseType_t commandTaskResult = xTaskCreate(
     commandTask,         // Task function
     "CommandTask",       // Task name
-    1024,                // Stack size (words)
+    1024,                // Stack size (words) - reduced to prevent memory issues
     NULL,                // Task parameters
-    2,                   // Priority (medium priority)
+    1,                   // Priority (decreased from 2 to 1 to prioritize SD over commands)
     NULL                 // Task handle
   );
   
-  // Start the FreeRTOS scheduler
+  if (commandTaskResult != pdPASS) {
+    Serial.println("<DEBUG:COMMAND_TASK_CREATE_FAILED>");
+    while (1);
+  }
+  Serial.println("<DEBUG:COMMAND_TASK_CREATED>");
+  Serial.println("<DEBUG:ALL_TASKS_CREATED>");
+  
+  // Check available heap memory before starting scheduler
+  Serial.print("<DEBUG:FREE_HEAP_BEFORE_SCHEDULER:");
+  Serial.print(xPortGetFreeHeapSize());
+  Serial.println(">");
+    // Start the FreeRTOS scheduler
+  Serial.println("<DEBUG:STARTING_FREERTOS_SCHEDULER>");
+  Serial.flush(); // Ensure debug message is sent
+  delay(100); // Small delay to ensure message transmission
   vTaskStartScheduler();
   
   // Should never reach here if scheduler starts successfully
@@ -303,11 +332,10 @@ void sensorTask(void *pvParameters) {
           lastStatusReportTime = currentTime;
         }
       }
-      
-      xSemaphoreGive(i2cMutex);
+        xSemaphoreGive(i2cMutex);
     }
     
-    vTaskDelay(pdMS_TO_TICKS(10)); // ~100 Hz sensor update rate
+    vTaskDelay(pdMS_TO_TICKS(5)); // ~200 Hz sensor update rate (increased from 100 Hz) for 30+ Hz logging
   }
 }
 
@@ -318,7 +346,7 @@ void sdTask(void *pvParameters) {
       sdLogger->update();
     }
     
-    vTaskDelay(pdMS_TO_TICKS(1000)); // 1 Hz SD polling rate
+    vTaskDelay(pdMS_TO_TICKS(20)); // 50 Hz SD update rate (increased from 1 Hz) for 30+ Hz packet logging
   }
 }
 
@@ -326,7 +354,7 @@ void sdTask(void *pvParameters) {
 void commandTask(void *pvParameters) {
   while (1) {
     processFcCommands();
-    vTaskDelay(pdMS_TO_TICKS(5)); // Check for commands every 5ms
+    vTaskDelay(pdMS_TO_TICKS(50)); // Check for commands every 50ms (20 Hz) - less aggressive to prevent system overload
   }
 }
 

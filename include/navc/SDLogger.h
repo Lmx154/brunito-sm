@@ -10,17 +10,17 @@
 // SD Card configuration
 #define SD_CS_PIN PA4  // Choose appropriate CS pin for your hardware
 #define BUZZER_PIN PA0  // Buzzer pin (shared with FC)
-#define PACKET_BUFFER_SIZE 20
+#define PACKET_BUFFER_SIZE 100
 #define SD_FILENAME_MAX_LEN 50
 #define LED_BLINK_DURATION_MS 50
-#define SD_POLL_INTERVAL_MS 5000  // Normal polling interval (reduced from 1000ms to 5000ms)
-#define SD_POLL_INTERVAL_FAST_MS 1000  // Fast polling when changes detected (reduced from 200ms to 1000ms)
-#define SENSOR_STABILIZATION_DELAY_MS 10000  // 10 second delay after sensor init before logging
+#define SD_POLL_INTERVAL_MS 2000  // Normal polling interval (reduced from 5000ms to 2000ms)
+#define SD_POLL_INTERVAL_FAST_MS 500  // Fast polling when changes detected (reduced from 1000ms to 500ms)
+#define SENSOR_STABILIZATION_DELAY_MS 5000  // 5 second delay (reduced from 10s) after sensor init before logging
 #define BUZZER_BEEP_DURATION_MS 200  // Duration of buzzer beep when SD card missing
 
 // Packet buffer for SD logging
 typedef struct {
-    char data[250];  // Sized for full telemetry packet string
+    char data[300];  // Increased from 250 to 300 for better buffer capacity
     uint32_t timestamp_ms;
 } PacketEntry;
 

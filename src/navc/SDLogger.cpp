@@ -110,9 +110,8 @@ void SDLogger::checkSDCard() {
     }
     
     last_sd_poll_ms = current_time;
-    
-    // Protect all SD card operations with mutex
-    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+      // Protect all SD card operations with mutex
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(500)) != pdTRUE) {
         // Failed to get mutex, skip this check
         if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             Serial.println("<DEBUG:SD_MUTEX_TIMEOUT>");
@@ -349,37 +348,45 @@ void SDLogger::processWrites() {
     if (!logging_active || packet_buffer.count == 0) {
         return;
     }
-    
-    // Protect SD write operations with mutex
-    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+      // Protect SD write operations with mutex
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(50)) != pdTRUE) {
         // Failed to get mutex quickly, skip this write cycle
         return;
     }
     
     // Track write timing
     uint32_t write_start = micros();
+      // Process multiple packets per call for better throughput (up to 20 packets per cycle)
+    int packets_processed = 0;
+    const int max_packets_per_cycle = 20;
     
-    // Process one packet per call to avoid blocking
-    if (packet_buffer.tail != packet_buffer.head) {
+    while (packet_buffer.tail != packet_buffer.head && packets_processed < max_packets_per_cycle) {
         // Get packet from buffer
         char* packet_data = packet_buffer.packets[packet_buffer.tail].data;
         
         // Write to SD card
         if (log_file) {
             log_file.println(packet_data);
-            log_file.flush();  // Ensure data is written
             packets_logged++;
-            
-            // Trigger LED blink
-            led_blink_start_ms = millis();
-            led_blink_active = true;
-            if (sensor_manager) {
-                sensor_manager->setStatusLED(50, 20, 0);  // Dim orange
-            }
+            packets_processed++;
             
             // Update tail
             packet_buffer.tail = (packet_buffer.tail + 1) % PACKET_BUFFER_SIZE;
             packet_buffer.count--;
+        } else {
+            break; // No log file, exit loop
+        }
+    }
+    
+    // Flush only once after processing multiple packets for better performance
+    if (packets_processed > 0 && log_file) {
+        log_file.flush();  // Ensure data is written
+        
+        // Trigger LED blink only after processing packets
+        led_blink_start_ms = millis();
+        led_blink_active = true;
+        if (sensor_manager) {
+            sensor_manager->setStatusLED(50, 20, 0);  // Dim orange
         }
     }
     
