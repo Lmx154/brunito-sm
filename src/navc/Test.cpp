@@ -288,10 +288,9 @@ int SensorTest::testMagnetometer(SensorManager& sensorManager) {
     sensorManager.mag.set_op_mode(BMM150_NORMAL_MODE);
     sensorManager.mag.set_presetmode(BMM150_PRESETMODE_HIGHACCURACY);
     delay(50);
-    
-    // Test read to verify functionality
+      // Test read to verify functionality
     sensorManager.mag.read_mag_data();
-    Serial.print("<DEBUG:BMM150_TEST_DATA:X=");
+    Serial.print("<DEBUG:BMM150_RAW_TEST_DATA:X=");
     Serial.print(sensorManager.mag.mag_data.x);
     Serial.print(",Y=");
     Serial.print(sensorManager.mag.mag_data.y);

@@ -121,9 +121,8 @@ bool SensorManager::begin() {    // Initialize I2C bus with explicit pin configu
     float testX = mag.raw_mag_data.raw_datax;
     float testY = mag.raw_mag_data.raw_datay;
     float testZ = mag.raw_mag_data.raw_dataz;
-    
-    #if DEBUG_SENSORS
-    Serial.print("<DEBUG:BMM150_TEST_DATA:X=");
+      #if DEBUG_SENSORS
+    Serial.print("<DEBUG:BMM150_RAW_TEST_DATA:X=");
     Serial.print(testX);
     Serial.print(",Y=");
     Serial.print(testY);
@@ -270,11 +269,11 @@ bool SensorManager::updateWithDiagnostics() {
             if (attempt > 0) delay(5);
             
             mag.read_mag_data();
-            
-            if (mag.mag_data.x != 0 || mag.mag_data.y != 0 || mag.mag_data.z != 0) {
-                magData[0] = mag.mag_data.x;
-                magData[1] = mag.mag_data.y;
-                magData[2] = mag.mag_data.z;
+              if (mag.mag_data.x != 0 || mag.mag_data.y != 0 || mag.mag_data.z != 0) {
+                // Apply coordinate frame alignment: Flip X-axis to match BMI088 coordinate frame
+                magData[0] = -mag.mag_data.x;  // Flip X-axis for frame alignment
+                magData[1] = mag.mag_data.y;   // Y-axis already aligned
+                magData[2] = mag.mag_data.z;   // Z-axis already aligned
                 magSuccess = true;
             } else if (attempt == 1) {
                 // Try reset on second attempt
@@ -365,7 +364,8 @@ void SensorManager::readAccelGyro() {
 }
 
 void SensorManager::readMagnetometer() {
-    // Basic magnetometer reading with simple error handling
+    // Magnetometer reading with coordinate frame alignment to match BMI088
+    // BMM150 X-axis is flipped compared to BMI088, Y+ and Z+ already match
     static int8_t consecutiveFailCount = 0;
     static unsigned long lastResetTime = 0;
     
@@ -416,22 +416,27 @@ void SensorManager::readMagnetometer() {
             magData[2] = 0;
         }
         return;
-    }
-      // Valid reading - reset fail counter and apply low-pass filtering
+    }    // Valid reading - reset fail counter and apply low-pass filtering
     consecutiveFailCount = 0;
     
-    // Apply EMA low-pass filters to reduce EMI noise
-    magData[0] = magFilterX.update(mag.mag_data.x);
-    magData[1] = magFilterY.update(mag.mag_data.y);
-    magData[2] = magFilterZ.update(mag.mag_data.z);
+    // Apply coordinate frame alignment: Flip X-axis to match BMI088 coordinate frame
+    // Since Y+ and Z+ already match between BMM150 and BMI088, only X needs inversion
+    float alignedX = -mag.mag_data.x;  // Flip X-axis for frame alignment
+    float alignedY = mag.mag_data.y;   // Y-axis already aligned
+    float alignedZ = mag.mag_data.z;   // Z-axis already aligned
     
-    #if DEBUG_SENSORS
-    // Debug output to compare raw vs filtered magnetometer values (only every 100 samples to reduce spam)
+    // Apply EMA low-pass filters to reduce EMI noise
+    magData[0] = magFilterX.update(alignedX);
+    magData[1] = magFilterY.update(alignedY);
+    magData[2] = magFilterZ.update(alignedZ);
+      #if DEBUG_SENSORS
+    // Debug output to compare raw vs coordinate-aligned vs filtered magnetometer values (only every 100 samples to reduce spam)
     static int debugMagCounter = 0;
     if (++debugMagCounter >= 100) {
         char buffer[128];
-        snprintf(buffer, sizeof(buffer), "<DEBUG:MAG_RAW:%.0f,%.0f,%.0f,FILTERED:%.0f,%.0f,%.0f>",
+        snprintf(buffer, sizeof(buffer), "<DEBUG:MAG_RAW:%.0f,%.0f,%.0f,ALIGNED:%.0f,%.0f,%.0f,FILTERED:%.0f,%.0f,%.0f>",
                 (float)mag.mag_data.x, (float)mag.mag_data.y, (float)mag.mag_data.z,
+                alignedX, alignedY, alignedZ,
                 magData[0], magData[1], magData[2]);
         Serial.println(buffer);
         debugMagCounter = 0;
