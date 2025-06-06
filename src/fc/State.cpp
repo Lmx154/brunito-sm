@@ -20,6 +20,7 @@ extern UartManager uartManager; // Forward declaration of UartManager instance f
 // Pin definitions
 const int BUZZER_PIN = PA0;  // Changed from PB13 to PA0 for passive buzzer
 const int SERVO_PIN = PB14;  // Servo pin for testing
+const int MANUAL_OVERRIDE_PIN = PA1;  // Manual override button pin
 
 // Optimized buzzer frequencies for maximum loudness with passive buzzer
 // Frequencies between 2-3 kHz are typically the most efficient for passive buzzers
@@ -49,13 +50,17 @@ StateManager::StateManager() :
     armedTimestamp(0), 
     lastMotionTimestamp(0),
     inMotion(false),
+    lastManualOverrideState(false),
+    lastManualOverrideCheck(0),
     buzzerStartTime(0),
     buzzerDuration(0),
     buzzerActive(false),
     currentBuzzerTone(0),
-    pendingSoundState(STATE_IDLE),    soundSequenceStep(0),
+    pendingSoundState(STATE_IDLE),
+    soundSequenceStep(0),
     altitudeTestEnabled(false),
-    altitudeTestThreshold(0.0f),    velocityTestEnabled(false),
+    altitudeTestThreshold(0.0f),
+    velocityTestEnabled(false),
     velocityTestThreshold(500),  // Default 500 cm/s (5.0 m/s)
     velocityTestMinAltitude(121920), // Default 4000ft (121920 cm) minimum altitude
     previousAltitude(0),
@@ -65,6 +70,9 @@ StateManager::StateManager() :
     // Initialize buzzer pin
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, LOW);
+    
+    // Initialize manual override pin
+    pinMode(MANUAL_OVERRIDE_PIN, INPUT);  // A1 is 0 by default, button makes it 1
 }
 
 SystemState StateManager::getCurrentState() const {
@@ -644,6 +652,9 @@ bool StateManager::isCommandAllowed(CommandType cmd) const {
 }
 
 void StateManager::updateState() {
+    // Check for manual override (IDLE to ARMED via button press on A1)
+    checkManualOverride();
+    
     // Check for auto-recovery condition when in ARMED state
     if (currentState == STATE_ARMED && shouldAutoRecovery()) {
         changeState(STATE_RECOVERY);
@@ -729,53 +740,40 @@ bool StateManager::hasVelocityData() const {
     return (previousTimestamp > 0);
 }
 
-// Check background altitude test and trigger servo sequence if threshold reached
-void StateManager::checkBackgroundAltitudeTest() {
-    // Only check if altitude test is enabled
-    if (!altitudeTestEnabled) {
+// Check for manual override button press (IDLE to ARMED transition)
+void StateManager::checkManualOverride() {
+    // Only check manual override when in IDLE state
+    if (currentState != STATE_IDLE) {
         return;
     }
     
-    // Get the current altitude from the NAVC's latest packet
-    const SensorPacket& packet = uartManager.getLatestPacket();
+    unsigned long currentTime = millis();
     
-    // Get altitude in meters (packet.altitude is in cm)
-    float altitudeMeters = packet.altitude / 100.0f;
-    
-    // Check if above threshold
-    if (altitudeMeters >= altitudeTestThreshold) {
-        // Threshold reached! Execute servo sequence
-        char buffer[128];
-        snprintf(buffer, sizeof(buffer), "<DEBUG:BACKGROUND_ALTITUDE_TEST_TRIGGERED:ALT=%.2fm,THRESHOLD=%.2fm>", 
-                 altitudeMeters, altitudeTestThreshold);
-        Serial.println(buffer);
-        
-        // Sound the buzzer
-        toneMaxVolume(BUZZER_PIN, TONE_TEST);
-        delay(500); // Buzzer sound duration
-        noToneMaxVolume(BUZZER_PIN);
-        
-        // Move the servo to 90 degrees and back
-        Servo testServo;
-        testServo.attach(SERVO_PIN);
-        
-        // Move to 90 degrees
-        testServo.write(90);
-        delay(500); // Wait for servo to reach position
-        
-        // Move back to 0 degrees
-        testServo.write(0);
-        delay(500); // Wait for servo to reach position
-        
-        // Detach servo to prevent jitter
-        testServo.detach();
-        
-        // Disable the altitude test after triggering (one-time use)
-        altitudeTestEnabled = false;
-        altitudeTestThreshold = 0.0f;
-          FrameCodec::formatDebug(buffer, sizeof(buffer), "BACKGROUND_ALTITUDE_TEST_COMPLETE_DISABLED");
-        Serial.println(buffer);
+    // Debounce the button reading
+    if (currentTime - lastManualOverrideCheck < MANUAL_OVERRIDE_DEBOUNCE) {
+        return;
     }
+    
+    lastManualOverrideCheck = currentTime;
+    
+    // Read the current state of the manual override pin
+    bool currentPinState = digitalRead(MANUAL_OVERRIDE_PIN);
+    
+    // Check for button press (transition from LOW to HIGH)
+    if (currentPinState && !lastManualOverrideState) {
+        // Button pressed! Transition from IDLE to ARMED
+        if (changeState(STATE_ARMED)) {
+            char buffer[128];
+            FrameCodec::formatDebug(buffer, sizeof(buffer), "MANUAL_OVERRIDE_TRIGGERED:IDLE_TO_ARMED");
+            Serial.println(buffer);
+            
+            // Additional debug info
+            Serial.println("<DEBUG:MANUAL_OVERRIDE:BUTTON_PRESSED_A1>");
+        }
+    }
+    
+    // Update the last state for next comparison
+    lastManualOverrideState = currentPinState;
 }
 
 // Check background velocity test and trigger servo sequence if velocity threshold conditions are met
@@ -872,6 +870,56 @@ void StateManager::checkBackgroundVelocityTest() {
     // Update previous data for next calculation
     previousAltitude = currentAltitudeCm;
     previousTimestamp = packet.timestamp;
+}
+
+// Check background altitude test and trigger servo sequence if altitude threshold is met
+void StateManager::checkBackgroundAltitudeTest() {
+    // Only check if altitude test is enabled
+    if (!altitudeTestEnabled) {
+        return;
+    }
+    
+    // Get the current altitude from the NAVC's latest packet
+    const SensorPacket& packet = uartManager.getLatestPacket();
+    
+    // Convert altitude from cm to meters for comparison with threshold
+    float currentAltitudeM = packet.altitude / 100.0f;
+    
+    // Check if altitude meets or exceeds threshold
+    if (currentAltitudeM >= altitudeTestThreshold) {
+        // Threshold reached! Execute servo sequence
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), 
+                "<DEBUG:BACKGROUND_ALTITUDE_TEST_TRIGGERED:ALT=%.2fm,THRESHOLD=%.2fm>", 
+                currentAltitudeM, altitudeTestThreshold);
+        Serial.println(buffer);
+        
+        // Sound the buzzer
+        toneMaxVolume(BUZZER_PIN, TONE_TEST);
+        delay(500); // Buzzer sound duration
+        noToneMaxVolume(BUZZER_PIN);
+        
+        // Move the servo to 90 degrees and back
+        Servo testServo;
+        testServo.attach(SERVO_PIN);
+        
+        // Move to 90 degrees
+        testServo.write(90);
+        delay(500); // Wait for servo to reach position
+        
+        // Move back to 0 degrees
+        testServo.write(0);
+        delay(500); // Wait for servo to reach position
+        
+        // Detach servo to prevent jitter
+        testServo.detach();
+        
+        // Disable the altitude test after triggering (one-time use)
+        altitudeTestEnabled = false;
+        
+        FrameCodec::formatDebug(buffer, sizeof(buffer), "BACKGROUND_ALTITUDE_TEST_COMPLETE_DISABLED");
+        Serial.println(buffer);
+    }
 }
 
 // Start a buzzer sound pattern for the specific state

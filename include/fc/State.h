@@ -50,6 +50,11 @@ private:
     static const unsigned long AUTO_RECOVERY_TIMEOUT = 1800000; // 30 minutes
     static constexpr float NO_MOTION_THRESHOLD = 0.02; // g
     
+    // Manual override variables
+    bool lastManualOverrideState;
+    unsigned long lastManualOverrideCheck;
+    static const unsigned long MANUAL_OVERRIDE_DEBOUNCE = 50; // 50ms debounce
+    
     // Buzzer sound variables
     unsigned long buzzerStartTime;
     unsigned long buzzerDuration;
@@ -70,6 +75,9 @@ private:
     int32_t currentVelocity;        // current calculated velocity for external access (in cm/s)
       // Helper method to check inactivity timeout
     bool shouldAutoRecovery();
+    
+    // Manual override utility function
+    void checkManualOverride();
     
     // Buzzer sound utility functions
     void startBuzzerSound(SystemState state);
