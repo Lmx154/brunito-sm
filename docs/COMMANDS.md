@@ -74,32 +74,66 @@ Below is the complete list of commands, including their descriptions, allowed st
 - **Allowed States**: TEST only
 - **Example**: `<CMD:DISABLE_ALTITUDE_TEST>`
 
-### 11. `<CMD:NAVC_RESET_STATS>`
+### 11. `<CMD:VELOCITY_TEST>`
+- **Description**: Tests velocity-based behavior by calculating vertical velocity from altitude changes. When positive velocity (ascending) falls through the specified threshold while above minimum altitude, activates buzzer and servo sequence. This simulates apogee detection.
+- **Parameters**:
+  - `threshold` (optional): The velocity threshold in m/s. Default is 5.0 m/s.
+- **Velocity Conditions**: 
+  - Velocity must be positive (ascending)
+  - Velocity must be ≤ threshold value
+  - Altitude must be ≥ 4000ft (1219.2m) minimum safety altitude
+- **Allowed States**: TEST only
+- **Examples**: 
+  - `<CMD:VELOCITY_TEST>` - Uses default 5.0 m/s threshold
+  - `<CMD:VELOCITY_TEST:threshold=3>` - Sets threshold to 3.0 m/s
+
+### 12. `<CMD:ENABLE_VELOCITY_TEST>`
+- **Description**: Enables background velocity monitoring that runs continuously. Calculates vertical velocity from altitude changes and triggers servo sequence when positive velocity falls through the threshold while above minimum altitude. Automatically disables after triggering.
+- **Parameters**:
+  - `threshold` (optional): The velocity threshold in m/s (range: 1-50 m/s). Default is 5.0 m/s.
+- **Behavior**: 
+  - Continuously calculates velocity from altitude changes
+  - Monitors for positive velocity ≤ threshold at altitude ≥ 4000ft (1219.2m)
+  - Executes servo sequence (90° then 0°) and buzzer when triggered
+  - Self-disables after execution to prevent multiple triggers
+  - OFF by default at startup
+- **Allowed States**: TEST only
+- **Examples**: 
+  - `<CMD:ENABLE_VELOCITY_TEST>` - Monitor with default 5.0 m/s threshold
+  - `<CMD:ENABLE_VELOCITY_TEST:threshold=8>` - Monitor with 8.0 m/s threshold
+
+### 13. `<CMD:DISABLE_VELOCITY_TEST>`
+- **Description**: Disables the background velocity monitoring system if currently active.
+- **Parameters**: None
+- **Allowed States**: TEST only
+- **Example**: `<CMD:DISABLE_VELOCITY_TEST>`
+
+### 14. `<CMD:NAVC_RESET_STATS>`
 - **Description**: Resets packet statistics counters on the Navigation Controller (NAVC), forwarded via the FC.
 - **Allowed States**: All (IDLE, TEST, ARMED, RECOVERY)
 - **Example**: `<CMD:NAVC_RESET_STATS>`
 
-### 12. `<CMD:LORA_RESET_STATS>`
+### 15. `<CMD:LORA_RESET_STATS>`
 - **Description**: Resets LoRa communication statistics counters (e.g., packets sent, received, lost).
 - **Allowed States**: All (IDLE, TEST, ARMED, RECOVERY)
 - **Example**: `<CMD:LORA_RESET_STATS>`
 
-### 13. `<CMD:LORA_STATS>`
+### 16. `<CMD:LORA_STATS>`
 - **Description**: Requests detailed LoRa communication statistics, including RSSI, SNR, and packet counts.
 - **Allowed States**: All (IDLE, TEST, ARMED, RECOVERY)
 - **Example**: `<CMD:LORA_STATS>`
 
-### 14. `<CMD:TELEM_STATUS>`
+### 17. `<CMD:TELEM_STATUS>`
 - **Description**: Requests the current telemetry status, including system state, telemetry state, rate, and RSSI.
 - **Allowed States**: All (IDLE, TEST, ARMED, RECOVERY)
 - **Example**: `<CMD:TELEM_STATUS>`
 
-### 15. `<CMD:TEST>`
+### 18. `<CMD:TEST>`
 - **Description**: Performs testing functions in TEST mode. Currently enables the buzzer on the NAVC board (pin A0) for testing purposes. Future enhancements will add more test functionality.
 - **Allowed States**: TEST only
 - **Example**: `<CMD:TEST>`
 
-### 16. `<CMD:SERVO_TEST>`
+### 19. `<CMD:SERVO_TEST>`
 - **Description**: Tests the servo on pin PB14 of the Flight Controller by moving it to 90 degrees and back to 0 degrees.
 - **Allowed States**: TEST only
 - **Example**: `<CMD:SERVO_TEST>`
@@ -124,4 +158,4 @@ This documentation is based on the following project files:
 
 ## Last Updated
 
-May 17, 2025
+June 4, 2025

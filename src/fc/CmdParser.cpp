@@ -97,11 +97,16 @@ bool CmdParser::parseAndExecute() {
             sendAck(true, "TEST_SUCCESS");        } else if (cmd == CMD_TEST_SERVO) {
             sendAck(true, "SERVO_TEST_SUCCESS");
         } else if (cmd == CMD_TEST_ALTITUDE) {
-            sendAck(true, "ALTITUDE_TEST_SUCCESS");
-        } else if (cmd == CMD_ENABLE_ALTITUDE_TEST) {
+            sendAck(true, "ALTITUDE_TEST_SUCCESS");        } else if (cmd == CMD_ENABLE_ALTITUDE_TEST) {
             sendAck(true, "ALTITUDE_TEST_ENABLED");
         } else if (cmd == CMD_DISABLE_ALTITUDE_TEST) {
             sendAck(true, "ALTITUDE_TEST_DISABLED");
+        } else if (cmd == CMD_VELOCITY_TEST) {
+            sendAck(true, "VELOCITY_TEST_SUCCESS");
+        } else if (cmd == CMD_ENABLE_VELOCITY_TEST) {
+            sendAck(true, "VELOCITY_TEST_ENABLED");
+        } else if (cmd == CMD_DISABLE_VELOCITY_TEST) {
+            sendAck(true, "VELOCITY_TEST_DISABLED");
         } else {
             // For any other command, use the current state
             sendAck(true, stateManager.getStateString());
@@ -127,9 +132,12 @@ CommandType CmdParser::getCommandType(const char* cmdStr) {    if (strcmp(cmdStr
     if (strcmp(cmdStr, "ENTER_TEST") == 0) return CMD_ENTER_TEST;
     if (strcmp(cmdStr, "ENTER_RECOVERY") == 0) return CMD_ENTER_RECOVERY;
     if (strcmp(cmdStr, "TEST") == 0) return CMD_TEST_DEVICE; // Map "TEST" to our new command
-    if (strcmp(cmdStr, "SERVO_TEST") == 0) return CMD_TEST_SERVO; // New servo test command
-    if (strcmp(cmdStr, "ALTITUDE_TEST") == 0) return CMD_TEST_ALTITUDE; // New altitude-based test command
-    if (strcmp(cmdStr, "ENABLE_ALTITUDE_TEST") == 0) return CMD_ENABLE_ALTITUDE_TEST; // New background altitude test command    if (strcmp(cmdStr, "DISABLE_ALTITUDE_TEST") == 0) return CMD_DISABLE_ALTITUDE_TEST; // Disable background altitude test command
+    if (strcmp(cmdStr, "SERVO_TEST") == 0) return CMD_TEST_SERVO; // New servo test command    if (strcmp(cmdStr, "ALTITUDE_TEST") == 0) return CMD_TEST_ALTITUDE; // New altitude-based test command
+    if (strcmp(cmdStr, "ENABLE_ALTITUDE_TEST") == 0) return CMD_ENABLE_ALTITUDE_TEST; // New background altitude test command
+    if (strcmp(cmdStr, "DISABLE_ALTITUDE_TEST") == 0) return CMD_DISABLE_ALTITUDE_TEST; // Disable background altitude test command
+    if (strcmp(cmdStr, "VELOCITY_TEST") == 0) return CMD_VELOCITY_TEST; // New velocity-based test command
+    if (strcmp(cmdStr, "ENABLE_VELOCITY_TEST") == 0) return CMD_ENABLE_VELOCITY_TEST; // New background velocity test command
+    if (strcmp(cmdStr, "DISABLE_VELOCITY_TEST") == 0) return CMD_DISABLE_VELOCITY_TEST; // Disable background velocity test command
     if (strcmp(cmdStr, "QUERY") == 0) return CMD_QUERY;
     if (strncmp(cmdStr, "CONTROL", 7) == 0) return CMD_CONTROL;
     if (strcmp(cmdStr, "NAVC_RESET_STATS") == 0) return CMD_NAVC_RESET_STATS;
@@ -287,9 +295,69 @@ bool CmdParser::validateParameters(const char* cmdStr, const char* params) {
             }
         }
         
-        return true;
-    } else if (strcmp(cmdStr, "DISABLE_ALTITUDE_TEST") == 0) {
+        return true;    } else if (strcmp(cmdStr, "DISABLE_ALTITUDE_TEST") == 0) {
         // DISABLE_ALTITUDE_TEST should not have any parameters
+        return strlen(params) == 0;
+    } else if (strcmp(cmdStr, "VELOCITY_TEST") == 0) {
+        // Example: VELOCITY_TEST:threshold=5
+        char key[16] = {0};
+        int32_t value = 0;
+        
+        // Make a copy of params string since strtok modifies the string
+        char paramsCopy[MAX_CMD_LENGTH];
+        strncpy(paramsCopy, params, sizeof(paramsCopy) - 1);
+        
+        // Parse threshold parameter
+        char* token = strtok(paramsCopy, ",");
+        if (token != NULL) {
+            if (!parseParams(token, key, sizeof(key), &value)) {
+                return false;
+            }
+            
+            // Check if parameter is threshold and has a valid value (in m/s as integer)
+            if (strcmp(key, "threshold") == 0) {
+                // Threshold must be positive and reasonable (1 to 50 m/s)
+                if (value < 1 || value > 50) {
+                    return false;
+                }
+            } else {
+                // Unknown parameter
+                return false;
+            }
+        }
+        
+        return true;
+    } else if (strcmp(cmdStr, "ENABLE_VELOCITY_TEST") == 0) {
+        // Example: ENABLE_VELOCITY_TEST:threshold=5
+        char key[16] = {0};
+        int32_t value = 0;
+        
+        // Make a copy of params string since strtok modifies the string
+        char paramsCopy[MAX_CMD_LENGTH];
+        strncpy(paramsCopy, params, sizeof(paramsCopy) - 1);
+        
+        // Parse threshold parameter
+        char* token = strtok(paramsCopy, ",");
+        if (token != NULL) {
+            if (!parseParams(token, key, sizeof(key), &value)) {
+                return false;
+            }
+            
+            // Check if parameter is threshold and has a valid value (in m/s as integer)
+            if (strcmp(key, "threshold") == 0) {
+                // Threshold must be positive and reasonable (1 to 50 m/s)
+                if (value < 1 || value > 50) {
+                    return false;
+                }
+            } else {
+                // Unknown parameter
+                return false;
+            }
+        }
+        
+        return true;
+    } else if (strcmp(cmdStr, "DISABLE_VELOCITY_TEST") == 0) {
+        // DISABLE_VELOCITY_TEST should not have any parameters
         return strlen(params) == 0;
     }
     
