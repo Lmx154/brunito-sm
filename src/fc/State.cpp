@@ -20,6 +20,7 @@ extern UartManager uartManager; // Forward declaration of UartManager instance f
 // Pin definitions
 const int BUZZER_PIN = PA0;  // Changed from PB13 to PA0 for passive buzzer
 const int SERVO_PIN = PB14;  // Servo pin for testing
+const int MANUAL_OVERRIDE_PIN = PA1;  // Manual override button pin
 
 // Optimized buzzer frequencies for maximum loudness with passive buzzer
 // Frequencies between 2-3 kHz are typically the most efficient for passive buzzers
@@ -49,6 +50,8 @@ StateManager::StateManager() :
     armedTimestamp(0), 
     lastMotionTimestamp(0),
     inMotion(false),
+    lastManualOverrideState(false),
+    lastManualOverrideCheck(0),
     buzzerStartTime(0),
     buzzerDuration(0),
     buzzerActive(false),
@@ -56,10 +59,20 @@ StateManager::StateManager() :
     pendingSoundState(STATE_IDLE),
     soundSequenceStep(0),
     altitudeTestEnabled(false),
-    altitudeTestThreshold(0.0f) {
+    altitudeTestThreshold(0.0f),
+    velocityTestEnabled(false),
+    velocityTestThreshold(500),  // Default 500 cm/s (5.0 m/s)
+    velocityTestMinAltitude(121920), // Default 4000ft (121920 cm) minimum altitude
+    previousAltitude(0),
+    previousTimestamp(0),
+    velocityTestTriggered(false),
+    currentVelocity(0) {  // Initialize current velocity
     // Initialize buzzer pin
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, LOW);
+    
+    // Initialize manual override pin
+    pinMode(MANUAL_OVERRIDE_PIN, INPUT);  // A1 is 0 by default, button makes it 1
 }
 
 SystemState StateManager::getCurrentState() const {
@@ -393,8 +406,7 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
                 return true;
             }
             break;
-            
-        case CMD_DISABLE_ALTITUDE_TEST:
+              case CMD_DISABLE_ALTITUDE_TEST:
             // Disable background altitude test
             if (isCommandAllowed(cmd)) {
                 altitudeTestEnabled = false;
@@ -402,6 +414,196 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
                 
                 char buffer[64];
                 FrameCodec::formatDebug(buffer, sizeof(buffer), "ALTITUDE_TEST_DISABLED");
+                Serial.println(buffer);
+                return true;
+            }
+            break;
+            
+        case CMD_VELOCITY_TEST:
+            // This command tests velocity threshold and servo in TEST state (one-time test)
+            if (isCommandAllowed(cmd)) {
+                // Get the current altitude from the NAVC's latest packet
+                const SensorPacket& packet = uartManager.getLatestPacket();
+                
+                // Get altitude in meters (packet.altitude is in cm)
+                float currentAltitude = packet.altitude / 100.0f;
+                
+                // Default threshold (in m/s) - can be overridden by command parameter
+                float velocityThreshold = 5.0f;
+                
+                // Check if we received a threshold parameter with the command
+                const char* params = strchr(cmdBuffer + 5, ':');
+                if (params) {
+                    // Skip the colon
+                    params++;
+                    
+                    // Look for threshold parameter
+                    if (strstr(params, "threshold=") != nullptr) {
+                        // Parse the threshold value (expecting integer m/s)
+                        char paramKey[16];
+                        int32_t thresholdInt;
+                        
+                        // Make a copy of the parameter string
+                        char paramCopy[64];
+                        strncpy(paramCopy, params, sizeof(paramCopy) - 1);
+                        paramCopy[sizeof(paramCopy) - 1] = '\0';
+                        
+                        // Find the end of the parameters
+                        char* endParams = strchr(paramCopy, '>');
+                        if (endParams) {
+                            *endParams = '\0';
+                        }
+                        
+                        // Parse parameters using strtok
+                        char* token = strtok(paramCopy, ",");
+                        while (token != nullptr) {
+                            // Parse each parameter key=value pair
+                            char* equals = strchr(token, '=');
+                            if (equals) {
+                                *equals = '\0';
+                                if (strcmp(token, "threshold") == 0) {
+                                    thresholdInt = atol(equals + 1);
+                                    velocityThreshold = (float)thresholdInt;
+                                    break;
+                                }
+                            }
+                            token = strtok(nullptr, ",");
+                        }
+                    }
+                }
+                
+                char buffer[128];
+                snprintf(buffer, sizeof(buffer), "<DEBUG:VELOCITY_TEST:CURRENT_ALT=%.2fm,THRESHOLD=%.1fm/s>", 
+                         currentAltitude, velocityThreshold);
+                Serial.println(buffer);
+                
+                // For one-time test, calculate velocity if we have previous data
+                bool canCalculateVelocity = (previousTimestamp > 0);
+                
+                if (canCalculateVelocity) {
+                    // Calculate current velocity
+                    unsigned long timeDelta = packet.timestamp - previousTimestamp;
+                    
+                    if (timeDelta > 0 && timeDelta < 1000) { // Valid time delta
+                        float currentVelocity = (currentAltitude - previousAltitude) / (timeDelta / 1000.0f);
+                        
+                        snprintf(buffer, sizeof(buffer), "<DEBUG:VELOCITY_TEST:CALCULATED_VEL=%.2fm/s>", currentVelocity);
+                        Serial.println(buffer);
+                        
+                        // Check if velocity is positive and at/below threshold (simulating apogee approach)
+                        if (currentVelocity > 0 && currentVelocity <= velocityThreshold && currentAltitude >= velocityTestMinAltitude) {
+                            // Sound the buzzer
+                            toneMaxVolume(BUZZER_PIN, TONE_TEST);
+                            delay(500); // Buzzer sound duration
+                            noToneMaxVolume(BUZZER_PIN);
+                            
+                            // Move the servo to 90 degrees and back
+                            Servo testServo;
+                            testServo.attach(SERVO_PIN);
+                            
+                            // Move to 90 degrees
+                            testServo.write(90);
+                            delay(500); // Wait for servo to reach position
+                            
+                            // Move back to 0 degrees
+                            testServo.write(0);
+                            delay(500); // Wait for servo to reach position
+                            
+                            // Detach servo to prevent jitter
+                            testServo.detach();
+                            
+                            FrameCodec::formatDebug(buffer, sizeof(buffer), "VELOCITY_TEST_TRIGGERED");
+                        } else {
+                            FrameCodec::formatDebug(buffer, sizeof(buffer), "VELOCITY_CONDITIONS_NOT_MET");
+                        }
+                    } else {
+                        FrameCodec::formatDebug(buffer, sizeof(buffer), "VELOCITY_INVALID_TIME_DELTA");
+                    }
+                } else {
+                    FrameCodec::formatDebug(buffer, sizeof(buffer), "VELOCITY_NO_PREVIOUS_DATA");
+                }
+                
+                // Update previous data for next calculation
+                previousAltitude = currentAltitude;
+                previousTimestamp = packet.timestamp;
+                
+                Serial.println(buffer);
+                return true;
+            }
+            break;
+              case CMD_ENABLE_VELOCITY_TEST:
+            // Enable background velocity test with specified threshold
+            if (isCommandAllowed(cmd)) {
+                // Default threshold (in cm/s) - 500 cm/s = 5.0 m/s
+                int32_t threshold = 500;
+                
+                // Check if we received a threshold parameter with the command
+                const char* params = strchr(cmdBuffer + 5, ':');
+                if (params) {
+                    // Skip the colon
+                    params++;
+                    
+                    // Look for threshold parameter
+                    if (strstr(params, "threshold=") != nullptr) {
+                        // Parse the threshold value (expecting integer m/s, convert to cm/s)
+                        char paramKey[16];
+                        int32_t thresholdMetersPerSec;
+                        
+                        // Make a copy of the parameter string
+                        char paramCopy[64];
+                        strncpy(paramCopy, params, sizeof(paramCopy) - 1);
+                        paramCopy[sizeof(paramCopy) - 1] = '\0';
+                        
+                        // Find the end of the parameters
+                        char* endParams = strchr(paramCopy, '>');
+                        if (endParams) {
+                            *endParams = '\0';
+                        }
+                        
+                        // Parse parameters using strtok
+                        char* token = strtok(paramCopy, ",");
+                        while (token != nullptr) {
+                            // Parse each parameter key=value pair
+                            char* equals = strchr(token, '=');
+                            if (equals) {
+                                *equals = '\0';
+                                if (strcmp(token, "threshold") == 0) {
+                                    thresholdMetersPerSec = atol(equals + 1);
+                                    // Convert m/s to cm/s
+                                    threshold = thresholdMetersPerSec * 100;
+                                    break;
+                                }
+                            }
+                            token = strtok(nullptr, ",");
+                        }
+                    }
+                }
+                
+                // Enable the background velocity test
+                velocityTestEnabled = true;
+                velocityTestThreshold = threshold;
+                velocityTestTriggered = false;
+                previousTimestamp = 0; // Reset for fresh calculations
+                
+                char buffer[128];
+                snprintf(buffer, sizeof(buffer), "<DEBUG:VELOCITY_TEST_ENABLED:THRESHOLD=%ldcm/s,MIN_ALT=%ldcm>", 
+                         threshold, velocityTestMinAltitude);
+                Serial.println(buffer);
+                FrameCodec::formatDebug(buffer, sizeof(buffer), "VELOCITY_TEST_ENABLED");
+                Serial.println(buffer);
+                return true;
+            }
+            break;
+              case CMD_DISABLE_VELOCITY_TEST:
+            // Disable background velocity test
+            if (isCommandAllowed(cmd)) {
+                velocityTestEnabled = false;
+                velocityTestThreshold = 500; // Reset to default 500 cm/s (5.0 m/s)
+                velocityTestTriggered = false;
+                previousTimestamp = 0;
+                
+                char buffer[64];
+                FrameCodec::formatDebug(buffer, sizeof(buffer), "VELOCITY_TEST_DISABLED");
                 Serial.println(buffer);
                 return true;
             }
@@ -422,22 +624,24 @@ bool StateManager::isCommandAllowed(CommandType cmd) const {
     }
     
     // Check state-specific command permissions
-    switch (currentState) {
-        case STATE_IDLE:
-            // In IDLE, all commands except TEST_DEVICE, TEST_SERVO, and TEST_ALTITUDE are allowed
+    switch (currentState) {        case STATE_IDLE:
+            // In IDLE, all commands except TEST_DEVICE, TEST_SERVO, TEST_ALTITUDE, and velocity test commands are allowed
             return (cmd != CMD_TEST_DEVICE && cmd != CMD_TEST_SERVO && cmd != CMD_TEST_ALTITUDE && 
-                    cmd != CMD_ENABLE_ALTITUDE_TEST && cmd != CMD_DISABLE_ALTITUDE_TEST);
+                    cmd != CMD_ENABLE_ALTITUDE_TEST && cmd != CMD_DISABLE_ALTITUDE_TEST &&
+                    cmd != CMD_VELOCITY_TEST && cmd != CMD_ENABLE_VELOCITY_TEST && cmd != CMD_DISABLE_VELOCITY_TEST);
             
         case STATE_TEST:
-            // In TEST, only TEST, QUERY, ARM, TEST_DEVICE, TEST_SERVO, TEST_ALTITUDE and altitude test commands are allowed
+            // In TEST, only TEST, QUERY, ARM, TEST_DEVICE, TEST_SERVO, TEST_ALTITUDE, altitude test, and velocity test commands are allowed
             return (cmd == CMD_TEST || cmd == CMD_ARM || cmd == CMD_TEST_DEVICE || cmd == CMD_TEST_SERVO || 
-                    cmd == CMD_TEST_ALTITUDE || cmd == CMD_ENABLE_ALTITUDE_TEST || cmd == CMD_DISABLE_ALTITUDE_TEST);
+                    cmd == CMD_TEST_ALTITUDE || cmd == CMD_ENABLE_ALTITUDE_TEST || cmd == CMD_DISABLE_ALTITUDE_TEST ||
+                    cmd == CMD_VELOCITY_TEST || cmd == CMD_ENABLE_VELOCITY_TEST || cmd == CMD_DISABLE_VELOCITY_TEST);
             
         case STATE_ARMED:
-            // In ARMED, all commands except TEST, TEST_DEVICE, TEST_SERVO, and TEST_ALTITUDE are allowed
+            // In ARMED, all commands except TEST, TEST_DEVICE, TEST_SERVO, TEST_ALTITUDE, and velocity test commands are allowed
             // Note: Background altitude test can run in ARMED state, but enabling/disabling is not allowed
             return (cmd != CMD_TEST && cmd != CMD_TEST_DEVICE && cmd != CMD_TEST_SERVO && cmd != CMD_TEST_ALTITUDE &&
-                    cmd != CMD_ENABLE_ALTITUDE_TEST && cmd != CMD_DISABLE_ALTITUDE_TEST);
+                    cmd != CMD_ENABLE_ALTITUDE_TEST && cmd != CMD_DISABLE_ALTITUDE_TEST &&
+                    cmd != CMD_VELOCITY_TEST && cmd != CMD_ENABLE_VELOCITY_TEST && cmd != CMD_DISABLE_VELOCITY_TEST);
               case STATE_RECOVERY:
             // In RECOVERY, no commands are allowed except the always-allowed ones (DISARM already handled)
             return false;
@@ -448,6 +652,9 @@ bool StateManager::isCommandAllowed(CommandType cmd) const {
 }
 
 void StateManager::updateState() {
+    // Check for manual override (IDLE to ARMED via button press on A1)
+    checkManualOverride();
+    
     // Check for auto-recovery condition when in ARMED state
     if (currentState == STATE_ARMED && shouldAutoRecovery()) {
         changeState(STATE_RECOVERY);
@@ -459,6 +666,9 @@ void StateManager::updateState() {
     
     // Check background altitude test if enabled
     checkBackgroundAltitudeTest();
+    
+    // Check background velocity test if enabled
+    checkBackgroundVelocityTest();
     
     // Update buzzer state (non-blocking sound handling)
     updateBuzzerSound();
@@ -513,7 +723,156 @@ const char* StateManager::getStateString() const {
     return getStateStringFromEnum(currentState);
 }
 
-// Check background altitude test and trigger servo sequence if threshold reached
+// Velocity test data access methods
+bool StateManager::isVelocityTestEnabled() const {
+    return velocityTestEnabled;
+}
+
+int32_t StateManager::getCurrentVelocity() const {
+    return currentVelocity;
+}
+
+int32_t StateManager::getVelocityTestThreshold() const {
+    return velocityTestThreshold;
+}
+
+bool StateManager::hasVelocityData() const {
+    return (previousTimestamp > 0);
+}
+
+// Check for manual override button press (IDLE to ARMED transition)
+void StateManager::checkManualOverride() {
+    // Only check manual override when in IDLE state
+    if (currentState != STATE_IDLE) {
+        return;
+    }
+    
+    unsigned long currentTime = millis();
+    
+    // Debounce the button reading
+    if (currentTime - lastManualOverrideCheck < MANUAL_OVERRIDE_DEBOUNCE) {
+        return;
+    }
+    
+    lastManualOverrideCheck = currentTime;
+    
+    // Read the current state of the manual override pin
+    bool currentPinState = digitalRead(MANUAL_OVERRIDE_PIN);
+    
+    // Check for button press (transition from LOW to HIGH)
+    if (currentPinState && !lastManualOverrideState) {
+        // Button pressed! Transition from IDLE to ARMED
+        if (changeState(STATE_ARMED)) {
+            char buffer[128];
+            FrameCodec::formatDebug(buffer, sizeof(buffer), "MANUAL_OVERRIDE_TRIGGERED:IDLE_TO_ARMED");
+            Serial.println(buffer);
+            
+            // Additional debug info
+            Serial.println("<DEBUG:MANUAL_OVERRIDE:BUTTON_PRESSED_A1>");
+        }
+    }
+    
+    // Update the last state for next comparison
+    lastManualOverrideState = currentPinState;
+}
+
+// Check background velocity test and trigger servo sequence if velocity threshold conditions are met
+void StateManager::checkBackgroundVelocityTest() {
+    // Only check if velocity test is enabled and not already triggered
+    if (!velocityTestEnabled || velocityTestTriggered) {
+        return;
+    }
+    
+    // Get the current altitude from the NAVC's latest packet
+    const SensorPacket& packet = uartManager.getLatestPacket();
+    
+    // Work with altitude directly in cm to avoid float arithmetic
+    int32_t currentAltitudeCm = packet.altitude;
+    
+    // Check if we have previous data to calculate velocity
+    if (previousTimestamp == 0) {
+        // First measurement - initialize tracking data
+        previousAltitude = currentAltitudeCm;
+        previousTimestamp = packet.timestamp;
+        return;
+    }
+    
+    // Calculate time delta
+    unsigned long timeDelta = packet.timestamp - previousTimestamp;
+    
+    // Validate data - skip invalid packets
+    if (timeDelta == 0 || timeDelta > 1000 || packet.timestamp <= previousTimestamp) {
+        return; // Skip invalid data
+    }
+    
+    // Validate altitude - basic sanity check (within 100km of ground)
+    if (abs(packet.altitude) > 10000000) {
+        return; // Skip obviously invalid altitude
+    }
+    
+    // Calculate current velocity in cm/s (positive = ascending, negative = descending)
+    // velocity = (altitudeDelta in cm) / (timeDelta in seconds)
+    int32_t altitudeDeltaCm = currentAltitudeCm - previousAltitude;
+    currentVelocity = (altitudeDeltaCm * 1000) / (int32_t)timeDelta; // cm/s
+    
+    // Check velocity test conditions (must be positive velocity while going up)
+    bool velocityAtThreshold = (currentVelocity > 0 && currentVelocity <= velocityTestThreshold);
+    bool altitudeMinimumMet = (currentAltitudeCm >= velocityTestMinAltitude);
+    bool velocityPositive = (currentVelocity > 0);
+      // Debug output every 2 seconds
+    static unsigned long lastDebugTime = 0;
+    if (millis() - lastDebugTime > 2000) {
+        char debugBuffer[128];
+        snprintf(debugBuffer, sizeof(debugBuffer), 
+                "<DEBUG:VELOCITY_TEST:ALT=%ldcm,VEL=%ldcm/s,THRESH=%ldcm/s,MIN_ALT=%ldcm>",
+                currentAltitudeCm, currentVelocity, velocityTestThreshold, velocityTestMinAltitude);
+        Serial.println(debugBuffer);
+        lastDebugTime = millis();
+    }
+    
+    // Check if all conditions are met for triggering
+    if (velocityAtThreshold && altitudeMinimumMet && velocityPositive) {
+        // Threshold reached! Execute servo sequence
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), 
+                "<DEBUG:BACKGROUND_VELOCITY_TEST_TRIGGERED:ALT=%ldcm,VEL=%ldcm/s,THRESHOLD=%ldcm/s>", 
+                currentAltitudeCm, currentVelocity, velocityTestThreshold);
+        Serial.println(buffer);
+        
+        // Sound the buzzer
+        toneMaxVolume(BUZZER_PIN, TONE_TEST);
+        delay(500); // Buzzer sound duration
+        noToneMaxVolume(BUZZER_PIN);
+        
+        // Move the servo to 90 degrees and back
+        Servo testServo;
+        testServo.attach(SERVO_PIN);
+        
+        // Move to 90 degrees
+        testServo.write(90);
+        delay(500); // Wait for servo to reach position
+        
+        // Move back to 0 degrees
+        testServo.write(0);
+        delay(500); // Wait for servo to reach position
+        
+        // Detach servo to prevent jitter
+        testServo.detach();
+        
+        // Mark as triggered and disable the velocity test after triggering (one-time use)
+        velocityTestTriggered = true;
+        velocityTestEnabled = false;
+        
+        FrameCodec::formatDebug(buffer, sizeof(buffer), "BACKGROUND_VELOCITY_TEST_COMPLETE_DISABLED");
+        Serial.println(buffer);
+    }
+    
+    // Update previous data for next calculation
+    previousAltitude = currentAltitudeCm;
+    previousTimestamp = packet.timestamp;
+}
+
+// Check background altitude test and trigger servo sequence if altitude threshold is met
 void StateManager::checkBackgroundAltitudeTest() {
     // Only check if altitude test is enabled
     if (!altitudeTestEnabled) {
@@ -523,15 +882,16 @@ void StateManager::checkBackgroundAltitudeTest() {
     // Get the current altitude from the NAVC's latest packet
     const SensorPacket& packet = uartManager.getLatestPacket();
     
-    // Get altitude in meters (packet.altitude is in cm)
-    float altitudeMeters = packet.altitude / 100.0f;
+    // Convert altitude from cm to meters for comparison with threshold
+    float currentAltitudeM = packet.altitude / 100.0f;
     
-    // Check if above threshold
-    if (altitudeMeters >= altitudeTestThreshold) {
+    // Check if altitude meets or exceeds threshold
+    if (currentAltitudeM >= altitudeTestThreshold) {
         // Threshold reached! Execute servo sequence
         char buffer[128];
-        snprintf(buffer, sizeof(buffer), "<DEBUG:BACKGROUND_ALTITUDE_TEST_TRIGGERED:ALT=%.2fm,THRESHOLD=%.2fm>", 
-                 altitudeMeters, altitudeTestThreshold);
+        snprintf(buffer, sizeof(buffer), 
+                "<DEBUG:BACKGROUND_ALTITUDE_TEST_TRIGGERED:ALT=%.2fm,THRESHOLD=%.2fm>", 
+                currentAltitudeM, altitudeTestThreshold);
         Serial.println(buffer);
         
         // Sound the buzzer
@@ -556,7 +916,6 @@ void StateManager::checkBackgroundAltitudeTest() {
         
         // Disable the altitude test after triggering (one-time use)
         altitudeTestEnabled = false;
-        altitudeTestThreshold = 0.0f;
         
         FrameCodec::formatDebug(buffer, sizeof(buffer), "BACKGROUND_ALTITUDE_TEST_COMPLETE_DISABLED");
         Serial.println(buffer);

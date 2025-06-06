@@ -1,846 +1,348 @@
-# Brunito Telemetry Communication Protocol
+# Brunito Flight System - Telemetry Data Sheet
 
-## Overview
+## Flight Controller States
 
-This document provides a comprehensive guide to the telemetry communication protocol used in the Brunito project. The system consists of three main modules:
+| State | Description | Telemetry Rate | Available Commands |
+|-------|-------------|----------------|-------------------|
+| **IDLE** | Ground idle, sensors inactive | No telemetry | `ARM`, `ENTER_TEST`, `DISARM`, `QUERY`, `NAVC_RESET_STATS` |
+| **TEST** | Pre-flight diagnostics | 0.5Hz diagnostic | `ARM`, `DISARM`, `QUERY`, `TEST`, `SERVO_TEST`, `ALTITUDE_TEST`, `ENABLE_ALTITUDE_TEST`, `DISABLE_ALTITUDE_TEST`, `NAVC_RESET_STATS` |
+| **ARMED** | Ready for flight, full sensors | 1-10Hz adaptive | `DISARM`, `ENTER_RECOVERY`, `QUERY`, `NAVC_RESET_STATS` |
+| **RECOVERY** | Parachute deployed, GPS tracking | 1Hz GPS-only | `DISARM`, `QUERY`, `NAVC_RESET_STATS` |
 
-- **NAVC (Navigation Controller)**: Handles sensor fusion and data collection
-- **FC (Flight Controller)**: Manages flight operations and state transitions
-- **GS (Ground Station)**: Acts as a bridge between the flight system and ground computer
+## ARMED State Telemetry Format
 
-The Ground Station (GS) is the primary interface for computer-based telemetry parsing and command transmission, as it's the only module directly connected to the computer via USB.
+**Output**: `<MM/DD/YYYY,HH:MM:SS,altitude,accelX,accelY,accelZ,gyroX,gyroY,gyroZ,magX,magY,magZ,latitude,longitude,satellites,temperature>`
 
-## System Architecture
+**Example**: `<05/27/2025,11:43:46,0.95,-37,-967,-3,128,-27,204,6,-53,20,1,1,0,24>`
 
-```
-[NAVC] --UART--> [FC] --LoRa--> [GS] --USB--> [Computer]
-```
-
-### Communication Links
-- **NAVC ↔ FC**: UART (115200 baud) - Binary sensor packets at 50Hz
-- **FC ↔ GS**: LoRa (433MHz) - ASCII telemetry packets at 1-10Hz adaptive rate
-- **GS ↔ Computer**: USB CDC (921600 baud) - ASCII telemetry and commands
-
-## Data Structures
-
-### 1. NAVC Sensor Packet (Binary - 44 bytes)
-
-The core sensor data structure transmitted from NAVC to FC:
-
-```cpp
-typedef struct {
-    uint16_t packetId;        // Packet sequence number (2 bytes)
-    uint32_t timestamp;       // Milliseconds since boot (4 bytes)
-    int32_t altitude;         // Altitude in cm (4 bytes)
-    
-    // Accelerometer data (6 bytes) - Pre-filtered with EMA α=0.2
-    int16_t accelX;           // mg (milli-g) (2 bytes)
-    int16_t accelY;           // mg (milli-g) (2 bytes)
-    int16_t accelZ;           // mg (milli-g) (2 bytes)
-    
-    // Gyroscope data (6 bytes) - Pre-filtered with EMA α=0.2
-    int16_t gyroX;            // 0.01°/s (centidegrees/sec) (2 bytes)
-    int16_t gyroY;            // 0.01°/s (centidegrees/sec) (2 bytes)
-    int16_t gyroZ;            // 0.01°/s (centidegrees/sec) (2 bytes)
-    
-    // Magnetometer data (6 bytes) - Pre-filtered with EMA α=0.1
-    int16_t magX;             // 0.1µT (decisla) (2 bytes)
-    int16_t magY;             // 0.1µT (decisla) (2 bytes)
-    int16_t magZ;             // 0.1µT (decisla) (2 bytes)
-    
-    // GPS data (8 bytes)
-    int32_t latitude;         // degrees×10⁷ (4 bytes)
-    int32_t longitude;        // degrees×10⁷ (4 bytes)
-    
-    // RTC data (6 bytes)
-    uint8_t year;             // Last two digits of year (1 byte)
-    uint8_t month;            // Month (1-12) (1 byte)
-    uint8_t day;              // Day (1-31) (1 byte)
-    uint8_t hour;             // Hour (0-23) (1 byte)
-    uint8_t minute;           // Minute (0-59) (1 byte)
-    uint8_t second;           // Second (0-59) (1 byte)
-    
-    // Additional data (3 bytes)
-    uint8_t satellites;       // Number of GPS satellites (1 byte)
-    int16_t temperature;      // Temperature in °C (whole degrees) (2 bytes)
-    
-    // CRC validation (2 bytes)
-    uint16_t crc16;           // CRC16-CCITT checksum (2 bytes)
-} __attribute__((packed)) SensorPacket;
-```
-
-**Total Size**: 44 bytes
-**Transmission Rate**: 50Hz (NAVC → FC)  
-**Validation**: CRC16-CCITT with polynomial 0x1021, initial value 0xFFFF
-
-#### Data Scaling and Units
-
-**All sensor values are stored as integers with specific scaling factors for efficient transmission:**
-
-- **Accelerometer**: Values in milli-g (mg), where 1000mg = 1g = 9.81m/s²
-- **Gyroscope**: Values in centidegrees per second (0.01°/s), where 100 = 1°/s
-- **Magnetometer**: Values in decisla (0.1µT), where 10 = 1µT
-- **Altitude**: Values in centimeters (cm), where 100 = 1 meter
-- **GPS**: Latitude/longitude in degrees×10⁷, where 10,000,000 = 1 degree
-- **Temperature**: Whole degrees Celsius (rounded to nearest integer)
-
-#### 📊 **Important: Pre-Applied Low-Pass Filtering**
-
-**All sensor data in the telemetry stream has been pre-processed with Exponential Moving Average (EMA) low-pass filters** to reduce MEMS sensor noise and improve data quality for real-time flight control applications.
-
-**Filter Parameters**:
-- **Accelerometer & Gyroscope**: α = 0.2 (moderate smoothing, preserves responsiveness for flight control)
-- **Magnetometer**: α = 0.1 (higher smoothing due to EMI sensitivity)  
-- **Barometer**: α = 0.05 (heavy smoothing for stable altitude readings)
-
-**EMA Formula**: `filtered_value = α × raw_value + (1-α) × previous_filtered_value`
-
-**Implications for Software Development**:
-- Data is already noise-reduced and suitable for direct use in flight algorithms
-- No additional low-pass filtering is typically needed in ground station software
-- Higher-frequency noise components (>5-10Hz) have been significantly attenuated
-- Original sensor noise characteristics are not present in the telemetry data
-- Filter introduces minimal phase lag while preserving signal dynamics important for flight control
-
-### 2. LoRa Packet Structure (FC ↔ GS)
-
-LoRa packets use ASCII format with structured headers:
-
-```
-[PACKET_TYPE:DATA_PAYLOAD]
-```
-
-**Maximum LoRa Payload**: 255 bytes  
-**Transmission Rate**: Adaptive 1-10Hz based on flight state
-
-## Ground Station (GS) Protocol
-
-### USB Communication Format
-
-The GS communicates with the computer via USB CDC at 921600 baud using ASCII protocols.
-
-### Telemetry Output Formats
-
-#### 1. ARMED State Telemetry (Full Sensor Data)
-**Format**: Comma-separated values enclosed in angle brackets
-```
-<MM/DD/YYYY,HH:MM:SS,altitude,accelX,accelY,accelZ,gyroX,gyroY,gyroZ,magX,magY,magZ,latitude,longitude,satellites,temperature>
-```
-
-**Real Example**:
-```
-<05/27/2025,11:43:46,0.95,-37,-967,-3,128,-27,204,6,-53,20,1,1,0,24>
-```
-
-**Field-by-Field Breakdown**:
-| Position | Field | Example Value | Units/Scaling | Description |
-|----------|-------|---------------|---------------|-------------|
-| 1 | Date | `05/27/2025` | MM/DD/YYYY | Current date from RTC |
-| 2 | Time | `11:43:46` | HH:MM:SS | Current time from RTC |
-| 3 | Altitude | `0.95` | meters | Barometric altitude (raw value ÷ 100) |
-| 4 | AccelX | `-37` | mg | X-axis acceleration (milli-g) |
-| 5 | AccelY | `-967` | mg | Y-axis acceleration (milli-g) |
-| 6 | AccelZ | `-3` | mg | Z-axis acceleration (milli-g) |
-| 7 | GyroX | `128` | 0.01°/s | X-axis rotation rate (centidegrees/sec) |
-| 8 | GyroY | `-27` | 0.01°/s | Y-axis rotation rate (centidegrees/sec) |
-| 9 | GyroZ | `204` | 0.01°/s | Z-axis rotation rate (centidegrees/sec) |
-| 10 | MagX | `6` | 0.1µT | X-axis magnetic field (decisla) |
-| 11 | MagY | `-53` | 0.1µT | Y-axis magnetic field (decisla) |
-| 12 | MagZ | `20` | 0.1µT | Z-axis magnetic field (decisla) |
-| 13 | Latitude | `1` | degrees×10⁷ | GPS latitude (divide by 10,000,000) |
-| 14 | Longitude | `1` | degrees×10⁷ | GPS longitude (divide by 10,000,000) |
-| 15 | Satellites | `0` | count | Number of GPS satellites in view |
-| 16 | Temperature | `24` | °C | Temperature in degrees Celsius |
-
-**Value Conversions for Application Use**:
-- **Altitude**: `0.95` meters (raw value already converted)
-- **Acceleration**: X=-37mg, Y=-967mg, Z=-3mg (1000mg = 1g = 9.81m/s²)
-- **Gyroscope**: X=1.28°/s, Y=-0.27°/s, Z=2.04°/s (divide by 100)
-- **Magnetometer**: X=0.6µT, Y=-5.3µT, Z=2.0µT (divide by 10)
-- **GPS**: Lat=0.0000001°, Lon=0.0000001° (divide by 10,000,000)
-
-#### 2. RECOVERY State Telemetry (GPS-Only Data)
-**Format**: Reduced data set for recovery tracking
-```
-<MM/DD/YYYY,HH:MM:SS,latitude,longitude,altitude,satellites,temperature>
-```
-
-**Example**:
-```
-<05/27/2025,11:43:46,123456789,-456789012,125.50,8,23>
-```
-
-**Field-by-Field Breakdown**:
-| Position | Field | Example Value | Units/Scaling | Description |
-|----------|-------|---------------|---------------|-------------|
-| 1 | Date | `05/27/2025` | MM/DD/YYYY | Current date from RTC |
-| 2 | Time | `11:43:46` | HH:MM:SS | Current time from RTC |
-| 3 | Latitude | `123456789` | degrees×10⁷ | GPS latitude (12.3456789°) |
-| 4 | Longitude | `-456789012` | degrees×10⁷ | GPS longitude (-45.6789012°) |
-| 5 | Altitude | `125.50` | meters | Barometric altitude |
-| 6 | Satellites | `8` | count | Number of GPS satellites |
-| 7 | Temperature | `23` | °C | Temperature in degrees Celsius |
-
-#### 3. Test Mode Telemetry
-```
-<TEST:ALT:125.50m,ACCEL:-0.037,0.967,-0.003>
-```
-
-**Purpose**: Diagnostic output for sensor validation
-
-### Status Messages
-
-#### Debug Messages
-```
-DEBUG:<category>:<message>
-```
-
-**Examples**:
-```
-DEBUG:LORA:Packet received, RSSI=-67dBm
-DEBUG:GPS:Fix acquired, satellites=8
-DEBUG:STATE:Transition from IDLE to ARMED
-DEBUG:BATTERY:Voltage=7.2V, Level=85%
-```
-
-#### Error Messages
-```
-ERROR:<category>:<error_description>
-```
-
-**Examples**:
-```
-ERROR:LORA:Communication timeout
-ERROR:GPS:Signal lost
-ERROR:SENSOR:IMU calibration failed
-```
-
-#### System Status
-```
-STATUS:<component>:<status_info>
-```
-
-**Examples**:
-```
-STATUS:GS:Ready, LoRa connected
-STATUS:BATTERY:7.4V (90%)
-STATUS:GPS:8 satellites, HDOP=1.2
-```
-
-### Command Protocol
-
-#### Command Format
-Commands sent to the GS use bracketed format:
-```
-<CMD:COMMAND_NAME[:PARAMETERS]>
-```
-
-#### Available Commands
-
-##### 1. System Commands
-```
-<CMD:PING>                    // Test connectivity
-<CMD:RESET>                   // Reset GS system
-<CMD:STATUS>                  // Request status report
-<CMD:VERSION>                 // Get firmware version
-```
-
-##### 2. LoRa Commands
-```
-<CMD:LORA_FREQ:433000000>     // Set LoRa frequency (Hz)
-<CMD:LORA_POWER:14>           // Set TX power (0-20 dBm)
-<CMD:LORA_BW:125000>          // Set bandwidth (Hz)
-<CMD:LORA_SF:7>               // Set spreading factor (6-12)
-```
-
-##### 3. Flight Commands (Relayed to FC)
-```
-<CMD:ARM>                     // Arm the flight system
-<CMD:DISARM>                  // Disarm the flight system
-<CMD:ABORT>                   // Emergency abort
-<CMD:RECOVERY>                // Force recovery mode
-<CMD:CALIBRATE>               // Start sensor calibration
-```
-
-##### 4. Data Commands
-```
-<CMD:START_LOG>               // Start data logging
-<CMD:STOP_LOG>                // Stop data logging
-<CMD:CLEAR_LOG>               // Clear log files
-<CMD:DOWNLOAD_LOG>            // Download log data
-```
-
-#### Command Responses
-
-##### Success Responses
-```
-ACK:<command_name>[:additional_info]
-```
-
-**Examples**:
-```
-ACK:PING:GS_Ready
-ACK:ARM:Flight_system_armed
-ACK:LORA_FREQ:Set_to_433000000Hz
-```
-
-##### Error Responses
-```
-NAK:<command_name>:<error_reason>
-```
-
-**Examples**:
-```
-NAK:ARM:System_not_ready
-NAK:LORA_FREQ:Invalid_frequency
-NAK:UNKNOWN_COMMAND:Command_not_recognized
-```
-
-## Flight Controller (FC) Protocol
-
-### State Management
-
-The FC manages the following states:
-- `IDLE`: Ground idle state
-- `TEST`: Pre-flight diagnostics mode
-- `ARMED`: Ready for flight state
-- `RECOVERY`: Recovery mode (parachute deployed)
-
-### Telemetry Generation
-
-#### ARMED State Telemetry (1-10Hz adaptive)
-```cpp
-// Full telemetry packet using actual SensorPacket fields
-snprintf(buffer, sizeof(buffer), 
-         "<%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%d>",
-         datetime,           // MM/DD/YYYY,HH:MM:SS formatted string
-         altStr,             // Altitude in meters with 2 decimal places
-         packet.accelX, packet.accelY, packet.accelZ,    // mg values
-         packet.gyroX, packet.gyroY, packet.gyroZ,       // 0.01°/s values
-         packet.magX, packet.magY, packet.magZ,          // 0.1µT values
-         packet.latitude, packet.longitude,              // degrees×10⁷
-         packet.satellites,                              // satellite count
-         packet.temperature);                            // °C
-```
-
-#### RECOVERY State Telemetry (1Hz)
-```cpp
-// GPS-only telemetry for recovery using actual packet format
-snprintf(buffer, sizeof(buffer), "<%s,%ld,%ld,%s,%u,%d>",
-         datetime,              // MM/DD/YYYY,HH:MM:SS formatted string
-         packet.latitude,       // degrees×10⁷
-         packet.longitude,      // degrees×10⁷ 
-         altStr,                // Altitude in meters with 2 decimal places
-         packet.satellites,     // satellite count
-         packet.temperature);   // °C
-```
-
-### UART Communication (FC ↔ NAVC)
-
-#### Commands to NAVC
-```
-<START_TELEMETRY>             // Enable sensor data streaming
-<STOP_TELEMETRY>              // Disable sensor data streaming
-<PING>                        // Test NAVC connectivity
-<RESET_STATS>                 // Reset packet statistics
-<USB_DEBUG_ON/OFF>            // Control debug output
-<ECHO:message>                // Echo test command
-```
-
-#### NAVC Responses
-```
-<PONG>                        // Response to PING
-<ACK:command_name>            // Command acknowledged
-<NAK:error_reason>            // Command failed
-```
-
-## Navigation Controller (NAVC) Protocol
-
-### Sensor Data Streaming
-
-#### Binary Packet Format
-- **Protocol**: Custom binary with CRC16 validation
-- **Rate**: 50Hz continuous when telemetry enabled
-- **Transport**: UART (115200 baud) with hardware flow control
-- **Data Processing**: All sensor values are pre-filtered with EMA low-pass filters before transmission
-
-#### Frame Structure
-```
-[START_BYTE][LENGTH][SENSOR_PACKET][CRC16][END_BYTE]
-```
-
-### USB Debug Output
-
-The NAVC provides extensive debug information via USB CDC:
-
-```
-<DEBUG:category:message>
-```
-
-#### Debug Categories
-- `SENSOR_INIT`: Sensor initialization status
-- `I2C_ERROR`: I2C communication issues
-- `PACKET_STATS`: Transmission statistics
-- `SD_LOGGING`: SD card logging status
-- `COMMAND_RECEIVED`: Incoming commands
-- `RESPONSE_SENT`: Outgoing responses
-
-## Data Parsing Guidelines
-
-### Complete Field Reference for Applications
-
-When building applications to interface with the Brunito flight computer, you'll primarily work with CSV telemetry strings. Here's everything you need to know:
-
-⚠️ **Critical Note**: All sensor data (accelerometer, gyroscope, magnetometer, barometer) has been **pre-filtered with EMA low-pass filters** at the NAVC level. The values in telemetry packets are already noise-reduced and do not require additional filtering for most applications.
-
-#### Primary Data Format
-**Input String**: `<05/27/2025,11:43:46,0.95,-37,-967,-3,128,-27,204,6,-53,20,1,1,0,24>`
-
-#### Field Extraction (Zero-indexed after removing < and >)
+### Python Parsing Example
 ```python
-def parse_brunito_telemetry(data_line):
-    # Remove brackets and split by comma
-    clean_data = data_line.strip('<>')
-    fields = clean_data.split(',')
-    
-    # Parse datetime (fields 0-1)
-    date_str = fields[0]  # MM/DD/YYYY
-    time_str = fields[1]  # HH:MM:SS
-    datetime_obj = datetime.strptime(f"{date_str},{time_str}", "%m/%d/%Y,%H:%M:%S")
-    
-    # Parse sensor data (fields 2-15)
-    parsed_data = {
-        'timestamp': datetime_obj,
-        'altitude_m': float(fields[2]),                    # Already in meters
-        'accel_x_mps2': int(fields[3]) * 0.001 * 9.81,   # mg to m/s²
-        'accel_y_mps2': int(fields[4]) * 0.001 * 9.81,   # mg to m/s²
-        'accel_z_mps2': int(fields[5]) * 0.001 * 9.81,   # mg to m/s²
-        'gyro_x_dps': int(fields[6]) / 100.0,             # 0.01°/s to °/s
-        'gyro_y_dps': int(fields[7]) / 100.0,             # 0.01°/s to °/s
-        'gyro_z_dps': int(fields[8]) / 100.0,             # 0.01°/s to °/s
-        'mag_x_ut': int(fields[9]) / 10.0,                # 0.1µT to µT
-        'mag_y_ut': int(fields[10]) / 10.0,               # 0.1µT to µT
-        'mag_z_ut': int(fields[11]) / 10.0,               # 0.1µT to µT
-        'latitude_deg': int(fields[12]) / 10000000.0,     # 1e-7 degrees to degrees
-        'longitude_deg': int(fields[13]) / 10000000.0,    # 1e-7 degrees to degrees
-        'gps_satellites': int(fields[14]),                # Satellite count
-        'temperature_c': int(fields[15])                  # Temperature in °C
+def parse_armed_telemetry(line):
+    data = line.strip('<>').split(',')
+    return {
+        'datetime': datetime.strptime(f"{data[0]},{data[1]}", "%m/%d/%Y,%H:%M:%S"),
+        'altitude_m': float(data[2]),
+        'accel_xyz_mg': [int(data[3]), int(data[4]), int(data[5])],
+        'gyro_xyz_centidps': [int(data[6]), int(data[7]), int(data[8])],
+        'mag_xyz_decisla': [int(data[9]), int(data[10]), int(data[11])],
+        'gps_lat_1e7': int(data[12]),
+        'gps_lon_1e7': int(data[13]),
+        'gps_satellites': int(data[14]),
+        'temperature_c': int(data[15])
     }
-    
-    return parsed_data
 ```
 
-#### Expected Value Ranges for Validation
-| Parameter | Minimum | Maximum | Invalid Value | Notes |
-|-----------|---------|---------|---------------|-------|
-| Altitude | -1000m | +50000m | > 50000 | Barometric altitude (EMA filtered, α=0.05) |
-| Acceleration | -20g | +20g | > 200 m/s² | Total acceleration (EMA filtered, α=0.2) |
-| Gyroscope | -2000°/s | +2000°/s | > 2000°/s | Angular rates (EMA filtered, α=0.2) |
-| Magnetometer | -100µT | +100µT | All zeros | Earth's field ~25-65µT (EMA filtered, α=0.1) |
-| Latitude | -90° | +90° | 0.0000001° or 0.000001° | GPS coordinate (1 or 10 when no fix) |
-| Longitude | -180° | +180° | 0.0000001° or 0.000001° | GPS coordinate (1 or 10 when no fix) |
-| Satellites | 0 | 12 | >12 | GPS satellites in view |
-| Temperature | -40°C | +85°C | <-50°C or >100°C | Operating range |
+### Field Reference (16 fields)
+| # | Field | Example | Units | Range | Conversion |
+|---|-------|---------|-------|-------|------------|
+| 1-2 | Date/Time | `05/27/2025,11:43:46` | MM/DD/YYYY,HH:MM:SS | - | Parse as datetime |
+| 3 | Altitude | `0.95` | meters | -1000 to 50000 | Direct use |
+| 4-6 | Acceleration | `-37,-967,-3` | mg | ±20000 | ÷1000 for g-force |
+| 7-9 | Gyroscope | `128,-27,204` | 0.01°/s | ±200000 | ÷100 for °/s |
+| 10-12 | Magnetometer | `6,-53,20` | 0.1µT | ±1000 | ÷10 for µT |
+| 13-14 | GPS Position | `1,1` | degrees×10⁷ | ±1800000000 | ÷10⁷ for degrees |
+| 15 | GPS Satellites | `0` | count | 0-12 | Direct use |
+| 16 | Temperature | `24` | °C | -40 to 85 | Direct use |
 
-**Filter Effects on Data Quality**:
-- Sensor noise and high-frequency vibrations are significantly reduced
-- Rapid transients are smoothed but major motion events are preserved
-- Data appears more stable compared to raw MEMS sensor output
-- No additional filtering required for visualization or basic flight analysis
+## RECOVERY State Telemetry Format
 
-#### Data Quality Indicators
+**Output**: `<MM/DD/YYYY,HH:MM:SS,latitude,longitude,altitude,satellites,temperature>`
+
+**Example**: `<05/27/2025,11:43:46,123456789,-456789012,125.50,8,23>`
+
+### Python Parsing Example
 ```python
-def assess_data_quality(parsed_data):
-    quality = {        'gps_valid': parsed_data['gps_satellites'] >= 4 and 
-                    abs(parsed_data['latitude_deg']) > 0.00001 and 
-                    abs(parsed_data['longitude_deg']) > 0.00001,
-        'imu_valid': abs(parsed_data['accel_x_mps2']) < 200 and
-                    abs(parsed_data['accel_y_mps2']) < 200 and
-                    abs(parsed_data['accel_z_mps2']) < 200,
-        'mag_valid': not (parsed_data['mag_x_ut'] == 0 and 
-                         parsed_data['mag_y_ut'] == 0 and 
-                         parsed_data['mag_z_ut'] == 0),
-        'temp_valid': -40 <= parsed_data['temperature_c'] <= 85
+def parse_recovery_telemetry(line):
+    data = line.strip('<>').split(',')
+    return {
+        'datetime': datetime.strptime(f"{data[0]},{data[1]}", "%m/%d/%Y,%H:%M:%S"),
+        'gps_lat_deg': int(data[2]) / 10000000.0,  # 12.3456789°
+        'gps_lon_deg': int(data[3]) / 10000000.0,  # -45.6789012°
+        'altitude_m': float(data[4]),
+        'gps_satellites': int(data[5]),
+        'temperature_c': int(data[6])
     }
-    return quality
 ```
 
-#### Real-Time Data Rates
-- **ARMED State**: 1-10Hz adaptive (typical 5-8Hz)
-- **RECOVERY State**: 1Hz fixed
-- **TEST State**: 0.5Hz
+### Field Reference (7 fields)
+| # | Field | Example | Units | Conversion |
+|---|-------|---------|-------|------------|
+| 1-2 | Date/Time | `05/27/2025,11:43:46` | MM/DD/YYYY,HH:MM:SS | Parse as datetime |
+| 3-4 | GPS Position | `123456789,-456789012` | degrees×10⁷ | ÷10⁷ for degrees |
+| 5 | Altitude | `125.50` | meters | Direct use |
+| 6 | GPS Satellites | `8` | count | Direct use |
+| 7 | Temperature | `23` | °C | Direct use |
 
-#### Missing Data Handling
-- **GPS coordinates near zero**: Values of 1 or 10 (×10⁻⁷ degrees) indicate no GPS fix available
-- **Magnetometer all zeros**: Sensor not initialized or failed
-- **Temperature extremes**: Sensor fault or environmental limits
-- **Excessive acceleration**: Possible sensor saturation
+## TEST State Telemetry Format
 
-### Flight State Detection
+**Output**: `<TEST:ALT:125.50m,ACCEL:-0.037,0.967,-0.003>`
+
+**Purpose**: Diagnostic sensor validation during pre-flight checks.
+
+## Status Messages & Acknowledgments
+
+### Command Responses
+- **Success**: `<CMD_ACK:OK[:info]>` - e.g., `<CMD_ACK:OK:ARMED>`
+- **Failure**: `<CMD_ACK:ERR[:reason]>` - e.g., `<CMD_ACK:ERR:DENIED>`
+
+### Debug Messages
+- **Format**: `DEBUG:<category>:<message>`
+- **Examples**: `DEBUG:GPS:Fix acquired, satellites=8`
+
+### Status Reports
+- **Format**: `STATUS:<component>:<info>`
+- **Examples**: `STATUS:BATTERY:7.4V (90%)`
+
+## Command Availability Matrix
+
+| Command | IDLE | TEST | ARMED | RECOVERY |
+|---------|------|------|-------|----------|
+| `<CMD:ARM>` | ✓ | ✓ | - | - |
+| `<CMD:DISARM>` | ✓ | ✓ | ✓ | ✓ |
+| `<CMD:ENTER_TEST>` | ✓ | - | - | - |
+| `<CMD:ENTER_RECOVERY>` | - | - | ✓ | - |
+| `<CMD:QUERY>` | ✓ | ✓ | ✓ | ✓ |
+| `<CMD:NAVC_RESET_STATS>` | ✓ | ✓ | ✓ | ✓ |
+| `<CMD:TEST>` | - | ✓ | - | - |
+| `<CMD:SERVO_TEST>` | - | ✓ | - | - |
+| `<CMD:ALTITUDE_TEST>` | - | ✓ | - | - |
+| `<CMD:ENABLE_ALTITUDE_TEST>` | - | ✓ | - | - |
+| `<CMD:DISABLE_ALTITUDE_TEST>` | - | ✓ | - | - |
+
+## Command Usage Instructions
+
+### Basic Commands (No Parameters)
+Most commands require no parameters and follow the simple format:
+```
+<CMD:COMMAND_NAME>
+```
+
+**Examples:**
+- `<CMD:ARM>` - Transition to ARMED state
+- `<CMD:DISARM>` - Transition to IDLE state
+- `<CMD:QUERY>` - Query current state
+- `<CMD:TEST>` - Send buzzer test to NAVC
+- `<CMD:SERVO_TEST>` - Test servo movement (0° → 90° → 0°)
+
+### Commands with Parameters
+
+#### ALTITUDE_TEST (One-time altitude threshold test)
+**Format:** `<CMD:ALTITUDE_TEST:threshold=VALUE>`
+
+**Parameters:**
+- `threshold` - Altitude threshold in centimeters (1-30000)
+
+**Examples:**
+```
+<CMD:ALTITUDE_TEST:threshold=200>     # Test at 2.0 meters
+<CMD:ALTITUDE_TEST:threshold=1000>    # Test at 10.0 meters
+<CMD:ALTITUDE_TEST:threshold=500>     # Test at 5.0 meters
+```
+
+**Behavior:**
+- Compares current altitude against threshold
+- If altitude ≥ threshold: Activates buzzer (500ms) and moves servo (0° → 90° → 0°)
+- If altitude < threshold: Reports "ALTITUDE_BELOW_THRESHOLD"
+- Default threshold: 200cm (2.0m) if parameter omitted
+
+#### ENABLE_ALTITUDE_TEST (Background altitude monitoring)
+**Format:** `<CMD:ENABLE_ALTITUDE_TEST:threshold=VALUE>`
+
+**Parameters:**
+- `threshold` - Altitude threshold in centimeters (minimum 1, no upper limit)
+
+**Examples:**
+```
+<CMD:ENABLE_ALTITUDE_TEST:threshold=300>    # Monitor at 3.0 meters
+<CMD:ENABLE_ALTITUDE_TEST:threshold=1500>   # Monitor at 15.0 meters
+<CMD:ENABLE_ALTITUDE_TEST:threshold=100>    # Monitor at 1.0 meter
+```
+
+**Behavior:**
+- Enables continuous background altitude monitoring
+- Triggers buzzer and servo when altitude threshold is reached
+- Remains active until explicitly disabled
+- Default threshold: 200cm (2.0m) if parameter omitted
+
+#### DISABLE_ALTITUDE_TEST (Disable background monitoring)
+**Format:** `<CMD:DISABLE_ALTITUDE_TEST>`
+
+**Parameters:** None
+
+**Example:**
+```
+<CMD:DISABLE_ALTITUDE_TEST>
+```
+
+**Behavior:**
+- Disables background altitude monitoring
+- Stops all altitude-triggered actions
+
+#### CONTROL (Device control - RECOGNIZED BUT NOT IMPLEMENTED)
+**Format:** `<CMD:CONTROL:param1=value1,param2=value2>`
+
+**Note:** This command is parsed and acknowledged but has no functional implementation in the current firmware.
+
+**Theoretical Parameters:**
+- `servo` - Servo position in degrees (0-180)
+- `buzzer` - Buzzer state (0=off, 1=on)
+
+**Examples:**
+```
+<CMD:CONTROL:servo=45>              # Set servo to 45 degrees
+<CMD:CONTROL:buzzer=1>              # Turn buzzer on
+<CMD:CONTROL:servo=90,buzzer=1>     # Set servo and buzzer
+```
+
+### Command Format Rules
+
+1. **Encapsulation:** All commands must be enclosed in `< >` brackets
+2. **Prefix:** All commands start with `CMD:`
+3. **Parameters:** Separated by colons `:` from command name
+4. **Key-Value Pairs:** Use `=` to assign values: `key=value`
+5. **Multiple Parameters:** Separate with commas: `param1=value1,param2=value2`
+6. **Case Sensitivity:** Command names are case-sensitive
+7. **No Spaces:** Avoid spaces in command strings
+
+### Parameter Validation
+
+#### ALTITUDE_TEST Parameters
+- **threshold:** Must be 1-30000 centimeters (0.01m to 300m)
+- Invalid values will result in `<CMD_ACK:ERR:INVALID_PARAMS>`
+
+#### ENABLE_ALTITUDE_TEST Parameters  
+- **threshold:** Must be ≥1 centimeter (no upper limit for background monitoring)
+- Invalid values will result in `<CMD_ACK:ERR:INVALID_PARAMS>`
+
+#### CONTROL Parameters (if implemented)
+- **servo:** Must be 0-180 degrees
+- **buzzer:** Must be 0 (off) or 1 (on)
+- Invalid values will result in `<CMD_ACK:ERR:INVALID_PARAMS>`
+
+### Response Examples
+
+**Successful Commands:**
+```
+Command: <CMD:ALTITUDE_TEST:threshold=500>
+Response: <CMD_ACK:OK:ALTITUDE_TEST_SUCCESS>
+
+Command: <CMD:ENABLE_ALTITUDE_TEST:threshold=1000>
+Response: <CMD_ACK:OK:ALTITUDE_TEST_ENABLED>
+
+Command: <CMD:ARM>
+Response: <CMD_ACK:OK:ARMED>
+
+Command: <CMD:DISARM>
+Response: <CMD_ACK:OK:IDLE>
+
+Command: <CMD:QUERY>
+Response: <CMD_ACK:OK:ARMED> (or current state)
+```
+
+**Failed Commands:**
+```
+Command: <CMD:ALTITUDE_TEST:threshold=50000>
+Response: <CMD_ACK:ERR:INVALID_PARAMS>
+
+Command: <CMD:ENABLE_ALTITUDE_TEST:threshold=0>
+Response: <CMD_ACK:ERR:INVALID_PARAMS>
+
+Command: <CMD:ARM> (when already armed)
+Response: <CMD_ACK:ERR:ALREADY_ARMED>
+
+Command: <CMD:ENTER_TEST> (when not in IDLE)
+Response: <CMD_ACK:ERR:MUST_BE_IDLE>
+
+Command: <CMD:ENTER_RECOVERY> (when not in ARMED)
+Response: <CMD_ACK:ERR:MUST_BE_ARMED>
+
+Command: Invalid format
+Response: <CMD_ACK:ERR:INVALID_FORMAT>
+
+Command: Parse error
+Response: <CMD_ACK:ERR:PARSE_ERROR>
+
+Command: Checksum error
+Response: <CMD_ACK:ERR:CHECKSUM_ERROR>
+
+Command: General failure
+Response: <CMD_ACK:ERR:DENIED>
+```
+
+**Complete Success Response List:**
+- `<CMD_ACK:OK:IDLE>` - DISARM command
+- `<CMD_ACK:OK:ARMED>` - ARM command
+- `<CMD_ACK:OK:TEST>` - ENTER_TEST command
+- `<CMD_ACK:OK:RECOVERY>` - ENTER_RECOVERY command
+- `<CMD_ACK:OK:TEST_SUCCESS>` - TEST command
+- `<CMD_ACK:OK:[STATE]>` - QUERY command (returns current state)
+- `<CMD_ACK:OK:CONTROL_APPLIED>` - CONTROL command (recognized but not implemented)
+- `<CMD_ACK:OK:NAVC_STATS_RESET>` - NAVC_RESET_STATS command
+- `<CMD_ACK:OK:SERVO_TEST_SUCCESS>` - SERVO_TEST command
+- `<CMD_ACK:OK:ALTITUDE_TEST_SUCCESS>` - ALTITUDE_TEST command
+- `<CMD_ACK:OK:ALTITUDE_TEST_ENABLED>` - ENABLE_ALTITUDE_TEST command
+- `<CMD_ACK:OK:ALTITUDE_TEST_DISABLED>` - DISABLE_ALTITUDE_TEST command
+
+## Data Types & Scaling Reference
+
+| Sensor | Raw Type | Scaling Factor | Physical Unit | Pre-Filter |
+|--------|----------|----------------|---------------|------------|
+| **Accelerometer** | int16 | ÷1000 | g-force | EMA α=0.2 |
+| **Gyroscope** | int16 | ÷100 | degrees/sec | EMA α=0.2 |
+| **Magnetometer** | int16 | ÷10 | microTesla | EMA α=0.1 |
+| **Barometer** | float | 1.0 | meters | EMA α=0.05 |
+| **GPS Coordinates** | int32 | ÷10⁷ | degrees | No filter |
+| **Temperature** | int16 | 1.0 | °Celsius | No filter |
+| **Timestamp** | uint32 | 1.0 | milliseconds | No filter |
+
+**Note**: All IMU sensors (accelerometer, gyroscope, magnetometer) and barometric altitude are pre-filtered with Exponential Moving Average (EMA) filters to reduce noise. GPS and temperature data are unfiltered.
+
+## Link Quality & Telemetry Rate Adaptation
+
+### RSSI-Based Rate Control
+- **Strong Signal** (RSSI > -70dBm): 10Hz telemetry rate
+- **Good Signal** (-70 to -85dBm): 5Hz telemetry rate  
+- **Weak Signal** (-85 to -100dBm): 2Hz telemetry rate
+- **Poor Signal** (< -100dBm): 1Hz telemetry rate
+
+### Data Validation Guidelines
+
+#### GPS Validity Check
 ```python
-def detect_flight_phase(altitude_history, accel_history):
-    """
-    Detect flight phase based on telemetry data
-    Note: This is application-level flight phase detection, not FC states.
-    Actual FC states are: IDLE, TEST, ARMED, RECOVERY
-    """
-    current_alt = altitude_history[-1]
-    alt_rate = (altitude_history[-1] - altitude_history[-5]) / 5.0  # m/s over 5 samples
-    accel_mag = sqrt(sum(a**2 for a in accel_history[-1]))
-    
-    # Application-level flight phase analysis (not FC state machine)
-    if alt_rate > 10:
-        return "ASCENT_PHASE"    # Flight analysis phase
-    elif alt_rate < -5 and current_alt > 100:
-        return "DESCENT_PHASE"   # Flight analysis phase
-    elif accel_mag < 2 and current_alt < 50:
-        return "LANDED_PHASE"    # Flight analysis phase
-    else:
-        return "CRUISE_PHASE"    # Flight analysis phase
+def is_gps_valid(lat_1e7, lon_1e7, satellites):
+    return (satellites >= 4 and 
+            abs(lat_1e7) > 100000 and  # > 0.01 degrees
+            abs(lon_1e7) > 100000)
 ```
 
-## Error Handling and Validation
+#### IMU Range Validation
+- **Acceleration**: Valid range ±20g (±20000mg)
+- **Gyroscope**: Valid range ±2000°/s (±200000 centidegrees/s)
+- **Magnetometer**: Earth's field ~25-65µT (250-650 decisla)
 
-### CRC16 Validation (Binary Packets)
-```cpp
-uint16_t calculateCrc16(const uint8_t* data, size_t length) {
-    uint16_t crc = 0xFFFF;
-    
-    for (size_t i = 0; i < length; i++) {
-        crc ^= (uint16_t)data[i] << 8;
-        for (int j = 0; j < 8; j++) {
-            if (crc & 0x8000) {
-                crc = (crc << 1) ^ 0x1021;
-            } else {
-                crc <<= 1;
-            }
-        }
-    }
-    
-    return crc;
-}
-```
+#### Connection Status
+- **Telemetry Timeout**: >2 seconds indicates communication loss
+- **Invalid GPS**: Coordinates near 0.0000001° indicate no GPS fix
+- **Sensor Fault**: All magnetometer values = 0 indicates sensor failure
 
-### Timeout Handling
-- **Command Response Timeout**: 5 seconds
-- **Telemetry Timeout**: 2 seconds (indicates communication loss)
-- **LoRa Packet Timeout**: 10 seconds (adaptive retry)
+## Communication Specifications
 
-### Data Validation
-- Latitude: -90.0 to +90.0 degrees
-- Longitude: -180.0 to +180.0 degrees
-- Altitude: -1000 to +50000 meters
-- Velocity: 0 to 500 m/s
-- Timestamp: Monotonically increasing
+### Ground Station USB Interface
+- **Baud Rate**: 921600
+- **Data Format**: ASCII, newline-terminated
+- **Flow Control**: None
+- **Timeout**: 2 seconds for telemetry, 5 seconds for commands
 
-## Example Implementation
+### LoRa RF Link (FC ↔ GS)
+- **Frequency**: 915.0MHz (configurable)
+- **Modulation**: LoRa (SF7, BW500kHz, CR4/5)
+- **Max Payload**: 128 bytes
+- **Power**: 20dBm default (0-20dBm configurable)
+- **Sync Word**: 0xAB
+- **Preamble Length**: 6 symbols
 
-### Complete Python Application for Brunito Telemetry
-
-```python
-import serial
-import time
-import csv
-from datetime import datetime
-from math import sqrt
-
-class BrunitoTelemetryParser:
-    def __init__(self, port, baudrate=921600):
-        self.serial = serial.Serial(port, baudrate, timeout=1)
-        self.data_callbacks = []
-        self.debug_callbacks = []
-        self.last_telemetry = None
-        
-    def add_data_callback(self, callback):
-        """Add callback for processed telemetry data"""
-        self.data_callbacks.append(callback)
-        
-    def add_debug_callback(self, callback):
-        """Add callback for debug messages"""
-        self.debug_callbacks.append(callback)
-        
-    def parse_telemetry_line(self, line):
-        """Parse a complete telemetry line from GS output"""
-        line = line.strip()
-        
-        # Handle telemetry data (most common)
-        if line.startswith('<') and line.endswith('>'):
-            return self.parse_sensor_data(line)
-        
-        # Handle debug/status messages
-        elif line.startswith('<DEBUG:') or line.startswith('<STATUS:'):
-            for callback in self.debug_callbacks:
-                callback(line)
-            return None
-            
-        return None
-    
-    def parse_sensor_data(self, data_line):
-        """Parse the main sensor telemetry format"""
-        try:
-            # Remove brackets and split
-            clean_data = data_line.strip('<>')
-            fields = clean_data.split(',')
-            
-            if len(fields) == 16:  # ARMED state format
-                parsed = self.parse_armed_telemetry(fields)
-            elif len(fields) == 7:   # RECOVERY state format  
-                parsed = self.parse_recovery_telemetry(fields)
-            else:
-                return None
-                
-            # Validate data quality
-            parsed['quality'] = self.assess_data_quality(parsed)
-            
-            # Call all registered callbacks
-            for callback in self.data_callbacks:
-                callback(parsed)
-                
-            self.last_telemetry = parsed
-            return parsed
-            
-        except (ValueError, IndexError) as e:
-            print(f"Parse error: {e} for line: {data_line}")
-            return None
-    
-    def parse_armed_telemetry(self, fields):
-        """Parse full ARMED state telemetry"""
-        # Parse datetime
-        date_str = fields[0]  # MM/DD/YYYY
-        time_str = fields[1]  # HH:MM:SS
-        timestamp = datetime.strptime(f"{date_str},{time_str}", "%m/%d/%Y,%H:%M:%S")
-        
-        return {
-            'mode': 'ARMED',
-            'timestamp': timestamp,
-            'altitude_m': float(fields[2]),
-            'accel_x_g': int(fields[3]) / 1000.0,         # mg to g
-            'accel_y_g': int(fields[4]) / 1000.0,
-            'accel_z_g': int(fields[5]) / 1000.0,
-            'gyro_x_dps': int(fields[6]) / 100.0,         # centidegrees/s to degrees/s
-            'gyro_y_dps': int(fields[7]) / 100.0,
-            'gyro_z_dps': int(fields[8]) / 100.0,
-            'mag_x_ut': int(fields[9]) / 10.0,            # 0.1µT to µT
-            'mag_y_ut': int(fields[10]) / 10.0,
-            'mag_z_ut': int(fields[11]) / 10.0,
-            'latitude_deg': int(fields[12]) / 10000000.0, # 1e-7 degrees to degrees
-            'longitude_deg': int(fields[13]) / 10000000.0,
-            'gps_satellites': int(fields[14]),
-            'temperature_c': int(fields[15]),
-            # Computed values
-            'accel_magnitude_g': sqrt(sum(float(fields[i])**2 for i in [3,4,5])) / 1000.0,
-            'gyro_magnitude_dps': sqrt(sum(int(fields[i])**2 for i in [6,7,8])) / 100.0
-        }
-    
-    def parse_recovery_telemetry(self, fields):
-        """Parse RECOVERY state GPS-only telemetry"""
-        date_str = fields[0]
-        time_str = fields[1] 
-        timestamp = datetime.strptime(f"{date_str},{time_str}", "%m/%d/%Y,%H:%M:%S")
-        
-        return {
-            'mode': 'RECOVERY',
-            'timestamp': timestamp,
-            'latitude_deg': int(fields[2]) / 10000000.0,
-            'longitude_deg': int(fields[3]) / 10000000.0,
-            'altitude_m': float(fields[4]),
-            'gps_satellites': int(fields[5]),
-            'temperature_c': int(fields[6])
-        }
-    
-    def assess_data_quality(self, data):
-        """Assess quality of telemetry data"""
-        quality = {
-            'gps_valid': False,
-            'imu_valid': False,
-            'mag_valid': False,
-            'temp_valid': False
-        }
-        
-        # GPS validation (if present)
-        if 'latitude_deg' in data and 'longitude_deg' in data:
-            quality['gps_valid'] = (
-                data['gps_satellites'] >= 4 and
-                abs(data['latitude_deg']) > 0.0001 and
-                abs(data['longitude_deg']) > 0.0001 and
-                -90 <= data['latitude_deg'] <= 90 and
-                -180 <= data['longitude_deg'] <= 180
-            )
-        
-        # IMU validation (if present)
-        if 'accel_magnitude_g' in data:
-            quality['imu_valid'] = (
-                0.5 <= data['accel_magnitude_g'] <= 20 and  # Reasonable acceleration range
-                abs(data['gyro_magnitude_dps']) <= 2000     # Reasonable rotation rate
-            )
-        
-        # Magnetometer validation (if present)
-        if 'mag_x_ut' in data:
-            mag_magnitude = sqrt(data['mag_x_ut']**2 + data['mag_y_ut']**2 + data['mag_z_ut']**2)
-            quality['mag_valid'] = 20 <= mag_magnitude <= 80  # Earth's magnetic field range
-        
-        # Temperature validation
-        quality['temp_valid'] = -40 <= data['temperature_c'] <= 85
-        
-        return quality
-    
-    def send_command(self, command, parameters=None):
-        """Send command to flight computer via Ground Station"""
-        if parameters:
-            cmd_str = f"<CMD:{command}:{parameters}>\n"
-        else:
-            cmd_str = f"<CMD:{command}>\n"
-        
-        self.serial.write(cmd_str.encode())
-        
-        # Wait for response (5 second timeout)
-        start_time = time.time()
-        while time.time() - start_time < 5:
-            if self.serial.in_waiting:
-                response = self.serial.readline().decode().strip()
-                if response.startswith("ACK:"):
-                    return True, response
-                elif response.startswith("NAK:"):
-                    return False, response
-        
-        return False, "TIMEOUT"
-    
-    def start_data_logging(self, filename=None):
-        """Start logging telemetry to CSV file"""
-        if filename is None:
-            filename = f"brunito_telemetry_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        
-        self.log_file = open(filename, 'w', newline='')
-        self.csv_writer = csv.writer(self.log_file)
-        
-        # Write header
-        self.csv_writer.writerow([
-            'timestamp', 'mode', 'altitude_m', 'latitude_deg', 'longitude_deg',
-            'accel_x_g', 'accel_y_g', 'accel_z_g', 'accel_mag_g',
-            'gyro_x_dps', 'gyro_y_dps', 'gyro_z_dps', 'gyro_mag_dps',
-            'mag_x_ut', 'mag_y_ut', 'mag_z_ut', 
-            'gps_satellites', 'temperature_c',
-            'gps_valid', 'imu_valid', 'mag_valid', 'temp_valid'
-        ])
-        
-        def log_callback(data):
-            row = [
-                data['timestamp'].isoformat(),
-                data['mode'],
-                data.get('altitude_m', ''),
-                data.get('latitude_deg', ''),
-                data.get('longitude_deg', ''),
-                data.get('accel_x_g', ''),
-                data.get('accel_y_g', ''),
-                data.get('accel_z_g', ''),
-                data.get('accel_magnitude_g', ''),
-                data.get('gyro_x_dps', ''),
-                data.get('gyro_y_dps', ''),
-                data.get('gyro_z_dps', ''),
-                data.get('gyro_magnitude_dps', ''),
-                data.get('mag_x_ut', ''),
-                data.get('mag_y_ut', ''),
-                data.get('mag_z_ut', ''),
-                data.get('gps_satellites', ''),
-                data.get('temperature_c', ''),
-                data['quality']['gps_valid'],
-                data['quality']['imu_valid'],
-                data['quality']['mag_valid'],
-                data['quality']['temp_valid']
-            ]
-            self.csv_writer.writerow(row)
-            self.log_file.flush()
-        
-        self.add_data_callback(log_callback)
-        return filename
-    
-    def run(self):
-        """Main parsing loop"""
-        print("Brunito Telemetry Parser started...")
-        while True:
-            try:
-                if self.serial.in_waiting:
-                    line = self.serial.readline().decode('utf-8', errors='ignore')
-                    self.parse_telemetry_line(line)
-                time.sleep(0.01)  # Small delay to prevent excessive CPU usage
-            except KeyboardInterrupt:
-                print("Stopping telemetry parser...")
-                break
-            except Exception as e:
-                print(f"Parse error: {e}")
-
-# Usage Example
-if __name__ == "__main__":
-    # Create parser instance
-    parser = BrunitoTelemetryParser('COM3')  # Adjust port as needed
-    
-    # Add callback for real-time data display
-    def display_telemetry(data):
-        if data['mode'] == 'ARMED':
-            print(f"ALT: {data['altitude_m']:6.2f}m  "
-                  f"GPS: {data['latitude_deg']:8.5f},{data['longitude_deg']:8.5f}  "
-                  f"ACCEL: {data['accel_magnitude_g']:5.2f}g  "
-                  f"SATS: {data['gps_satellites']}")
-        elif data['mode'] == 'RECOVERY':
-            print(f"RECOVERY - GPS: {data['latitude_deg']:8.5f},{data['longitude_deg']:8.5f}  "
-                  f"ALT: {data['altitude_m']:6.2f}m")
-    
-    def display_debug(message):
-        print(f"DEBUG: {message}")
-    
-    parser.add_data_callback(display_telemetry)
-    parser.add_debug_callback(display_debug)
-    
-    # Start logging to file
-    log_filename = parser.start_data_logging()
-    print(f"Logging to: {log_filename}")
-    
-    # Send ARM command (optional)
-    success, response = parser.send_command('ARM')
-    print(f"ARM command: {'SUCCESS' if success else 'FAILED'} - {response}")
-    
-    # Start main loop
-    parser.run()
-```
-
-## Troubleshooting
-
-### Common Issues
-
-1. **No Telemetry Data**
-   - Check USB connection to GS
-   - Verify LoRa communication between FC and GS
-   - Ensure FC is in ARMED state for full telemetry
-
-2. **Invalid GPS Coordinates**
-   - GPS may not have fix (wait for satellite acquisition)
-   - Check for GPS antenna connection
-   - Verify GPS module power supply
-
-3. **Command Not Acknowledged**
-   - Check command syntax (must be exact)
-   - Verify LoRa communication range
-   - Ensure FC is in appropriate state for command
-
-4. **High Packet Loss**
-   - Check LoRa signal strength (RSSI values)
-   - Verify antenna connections
-   - Consider reducing transmission rate
-
-### Debug Commands
-```
-<CMD:STATUS>          // Get system status
-<CMD:PING>            // Test connectivity
-<CMD:VERSION>         // Get firmware versions
-```
-
-## Revision History
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 1.0 | 2025-05-27 | Initial documentation |
-| 1.1 | 2025-01-27 | Updated to reflect EMA low-pass filtering implementation on all MEMS sensors |
-
----
-
-*This document covers the complete telemetry communication protocol for the Brunito project. For hardware setup information, see HWSETUP.md. For command reference, see COMMANDS.md.*
+### UART Link (NAVC ↔ FC)
+- **Baud Rate**: 115200
+- **Data Format**: Binary packets with CRC16
+- **Packet Rate**: 50Hz sensor data stream
+- **Packet Size**: 44 bytes + 4 bytes framing = 48 bytes total
