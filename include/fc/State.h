@@ -53,10 +53,12 @@ class StateManager {
 private:
     SystemState currentState;
     unsigned long armedTimestamp;
+    unsigned long idleTimestamp;  // Timestamp when we entered IDLE state
     unsigned long lastMotionTimestamp;
     bool inMotion;
       // Constants
     static const unsigned long AUTO_RECOVERY_TIMEOUT = 1800000; // 30 minutes
+    static const unsigned long AUTO_ARM_TIMEOUT = 5000; // 5 seconds in IDLE before auto-arming
     static constexpr float NO_MOTION_THRESHOLD = 0.02; // g
     
     // Manual override variables - DEPRECATED: replaced by IdleLogic
@@ -83,6 +85,9 @@ private:
     bool velocityTestTriggered;   // prevent multiple triggers
     int32_t currentVelocity;        // current calculated velocity for external access (in cm/s)    // Helper method to check inactivity timeout
     bool shouldAutoRecovery();
+    
+    // Helper method to check auto-arming timeout
+    bool shouldAutoArm();
     
     // Manual override utility function - DEPRECATED: replaced by IdleLogic
     // void checkManualOverride();

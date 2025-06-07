@@ -20,8 +20,6 @@ TaskHandle_t BackgroundTask::backgroundTaskHandle = NULL;
 StateManager* BackgroundTask::stateManager = nullptr;
 CmdParser* BackgroundTask::cmdParser = nullptr;
 unsigned long BackgroundTask::lastBeepTime = 0;
-bool BackgroundTask::lastButtonState = false;
-unsigned long BackgroundTask::lastButtonCheck = 0;
 bool BackgroundTask::initialized = false;
 
 // Task configuration
@@ -37,15 +35,9 @@ bool BackgroundTask::begin(StateManager* stateMgr, CmdParser* cmdPsr) {
         Serial.println("<DEBUG:BACKGROUND_TASK_INIT_FAILED:NULL_PARAMS>");
         return false;
     }
-    
-    // Store references
+      // Store references
     stateManager = stateMgr;
     cmdParser = cmdPsr;
-    
-    // Initialize button pin
-    pinMode(ARM_BUTTON_PIN, INPUT);
-    lastButtonState = digitalRead(ARM_BUTTON_PIN);
-    lastButtonCheck = millis();
     
     // Initialize timing
     lastBeepTime = millis();
@@ -145,36 +137,8 @@ void BackgroundTask::backgroundTaskFunction(void *pvParameters) {
 }
 
 void BackgroundTask::processIdleState() {
-    unsigned long currentTime = millis();
-    
-    // Debounce button reading
-    if (currentTime - lastButtonCheck < BUTTON_DEBOUNCE_MS) {
-        return;
-    }
-    
-    lastButtonCheck = currentTime;
-    
-    // Read current button state
-    bool currentButtonState = digitalRead(ARM_BUTTON_PIN);
-    
-    // Check for button press (transition from LOW to HIGH)
-    if (currentButtonState && !lastButtonState) {
-        char buffer[64];
-        FrameCodec::formatDebug(buffer, sizeof(buffer), "BACKGROUND_TASK:ARM_BUTTON_PRESSED");
-        Serial.println(buffer);
-        
-        // Process ARM command through command parser
-        if (cmdParser != nullptr) {
-            const char* armCommand = "<CMD:ARM>";
-            // Note: We're calling processChar from within the background task
-            // This is safe because CmdParser uses the stateMutex internally
-            for (int i = 0; armCommand[i] != '\0'; i++) {
-                cmdParser->processChar(armCommand[i]);
-            }
-        }
-    }
-    
-    lastButtonState = currentButtonState;
+    // No specific background processing needed for IDLE state
+    // Auto-arming is now handled by StateManager::updateState()
 }
 
 void BackgroundTask::processArmedState() {

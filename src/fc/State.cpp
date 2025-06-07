@@ -24,7 +24,6 @@ extern SemaphoreHandle_t stateMutex;
 // Pin definitions
 const int BUZZER_PIN = PA0;
 const int SERVO_PIN = PB14;
-const int MANUAL_OVERRIDE_PIN = PA1;
 
 // Buzzer frequencies
 const int TONE_IDLE = 2800;
@@ -50,6 +49,7 @@ void noToneMaxVolume(uint8_t pin);
 StateManager::StateManager() : 
     currentState(STATE_IDLE), 
     armedTimestamp(0), 
+    idleTimestamp(millis()),  // Initialize with current time since we start in IDLE
     lastMotionTimestamp(0),
     inMotion(false),
     buzzerStartTime(0),
@@ -66,11 +66,9 @@ StateManager::StateManager() :
     previousAltitude(0),
     previousTimestamp(0),
     velocityTestTriggered(false),
-    currentVelocity(0) {
-    
+    currentVelocity(0) {    
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, LOW);
-    pinMode(MANUAL_OVERRIDE_PIN, INPUT);
 }
 
 SystemState StateManager::getCurrentState() const {
@@ -111,11 +109,11 @@ bool StateManager::changeState(SystemState newState) {
             }
             break;
     }
-    
-    // Execute state transitions
+      // Execute state transitions
     switch (newState) {
         case STATE_IDLE:
             stopBuzzer();
+            idleTimestamp = millis();  // Record when we entered IDLE state
             startBuzzerSound(STATE_IDLE);
             Serial.println("<DEBUG:STATE_CHANGE:IDLE>");
             Serial.println("<DEBUG:TELEMETRY:STOPPED>");
@@ -546,6 +544,16 @@ bool StateManager::isCommandAllowed(CommandType cmd) const {
 
 void StateManager::updateState() {
     // This function should be called with stateMutex held
+    
+    // Check for auto-arming condition in IDLE state
+    if (currentState == STATE_IDLE && shouldAutoArm()) {
+        changeState(STATE_ARMED);
+        
+        char buffer[64];
+        FrameCodec::formatDebug(buffer, sizeof(buffer), "AUTO_ARM_TRIGGERED");
+        Serial.println(buffer);
+    }
+    
     // Check for auto-recovery condition
     if (currentState == STATE_ARMED && shouldAutoRecovery()) {
         changeState(STATE_RECOVERY);
@@ -573,6 +581,13 @@ bool StateManager::shouldAutoRecovery() {
     unsigned long noMotionDuration = now - lastMotionTimestamp;
     
     return (armedDuration > AUTO_RECOVERY_TIMEOUT && noMotionDuration > AUTO_RECOVERY_TIMEOUT);
+}
+
+bool StateManager::shouldAutoArm() {
+    unsigned long now = millis();
+    unsigned long idleDuration = now - idleTimestamp;
+    
+    return (idleDuration >= AUTO_ARM_TIMEOUT);
 }
 
 void StateManager::reportMotion(float accelMagnitude) {

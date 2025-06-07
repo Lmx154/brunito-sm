@@ -17,9 +17,6 @@
 // Forward declarations
 class CmdParser;
 
-// Pin definitions
-static const int ARM_BUTTON_PIN = PA1; // Pin A1 for external button (same as IdleLogic)
-
 class BackgroundTask {
 private:
     // Task handle for the background process task
@@ -28,19 +25,12 @@ private:
     // References to required components
     static StateManager* stateManager;
     static CmdParser* cmdParser;
-    
-    // Timing variables for ARMED state buzzer
+      // Timing variables for ARMED state buzzer
     static unsigned long lastBeepTime;
-    
-    // Timing variables for IDLE state button check
-    static bool lastButtonState;
-    static unsigned long lastButtonCheck;
     
     // Task initialization status
     static bool initialized;
-    
-    // Constants
-    static const unsigned long BUTTON_DEBOUNCE_MS = 50;
+      // Constants
     static const unsigned long ARMED_BEEP_INTERVAL_MS = 2000;
     static const unsigned long TASK_DELAY_MS = 10; // 100Hz task rate
     
