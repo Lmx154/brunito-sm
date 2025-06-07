@@ -1,60 +1,57 @@
 /**
- * State.cpp - Finite-State Machine implementation for Flight Controller
+ * State.cpp - Thread-safe Finite-State Machine implementation
  * 
- * Implements the state machine logic, transition rules,
- * and command validation according to the current state.
+ * Implements the state machine logic with FreeRTOS mutex protection
+ * for thread-safe state transitions and command validation.
  */
 
 #include "../include/fc/State.h"
-#include "../include/fc/ArmedLogic.h"
-#include "../include/fc/IdleLogic.h"
 #include "../include/utils/FrameCodec.h"
-#include "../include/navc/Sensors.h"  // For SensorPacket structure
-#include "../include/fc/UartManager.h" // For UartManager
+#include "../include/navc/Sensors.h"
+#include "../include/fc/UartManager.h"
 #include <HardwareTimer.h>
 #include <Servo.h>
+#include <STM32FreeRTOS.h>
 
-// Forward declarations for telemetry functions declared in FC.cpp
+// External objects and mutexes
 extern void startTelemetry(uint8_t hz);
 extern void adjustTelemRate();
-extern UartManager uartManager; // Forward declaration of UartManager instance from FC.cpp
-extern class CmdParser cmdParser; // Forward declaration of CmdParser instance from FC.cpp
+extern UartManager uartManager;
+extern class CmdParser cmdParser;
+extern SemaphoreHandle_t uartMutex;
+extern SemaphoreHandle_t stateMutex;
 
 // Pin definitions
-const int BUZZER_PIN = PA0;  // Changed from PB13 to PA0 for passive buzzer
-const int SERVO_PIN = PB14;  // Servo pin for testing
-const int MANUAL_OVERRIDE_PIN = PA1;  // Manual override button pin
+const int BUZZER_PIN = PA0;
+const int SERVO_PIN = PB14;
+const int MANUAL_OVERRIDE_PIN = PA1;
 
-// Optimized buzzer frequencies for maximum loudness with passive buzzer
-// Frequencies between 2-3 kHz are typically the most efficient for passive buzzers
-const int TONE_IDLE = 2800;     // Resonant frequency for maximum volume
-const int TONE_TEST = 2500;     // Slightly different tone but still in loud range
-const int TONE_ARMED = 2600;    // Another resonant frequency for passive buzzers
-const int TONE_RECOVERY = 3000; // High-pitched, very loud alert tone
-const int TONE_ERROR = 2400;    // Lower but still efficient tone for errors
+// Buzzer frequencies
+const int TONE_IDLE = 2800;
+const int TONE_TEST = 2500;
+const int TONE_ARMED = 2600;
+const int TONE_RECOVERY = 3000;
+const int TONE_ERROR = 2400;
 
-// Buzzer durations - increased for maximum loudness perception
-const unsigned long SHORT_BEEP = 150;  // Longer short beep for more sound energy
-const unsigned long LONG_BEEP = 400;   // Extended long beep for maximum impact
+// Buzzer durations
+const unsigned long SHORT_BEEP = 150;
+const unsigned long LONG_BEEP = 400;
 
-// This defines a preprocessor constant for maximum buzzer volume
-#define MAX_VOLUME_PWM_DUTY 32768 // 50% duty cycle for maximum volume
-
-// Forward declarations for new maximum volume buzzer functions
-void toneMaxVolume(uint8_t pin, unsigned int frequency);
-void noToneMaxVolume(uint8_t pin);
+#define MAX_VOLUME_PWM_DUTY 32768
 
 // Global variables for the hardware timer
 HardwareTimer* buzzerTimer = nullptr;
 uint8_t activeBuzzerPin = 0;
+
+// Forward declarations
+void toneMaxVolume(uint8_t pin, unsigned int frequency);
+void noToneMaxVolume(uint8_t pin);
 
 StateManager::StateManager() : 
     currentState(STATE_IDLE), 
     armedTimestamp(0), 
     lastMotionTimestamp(0),
     inMotion(false),
-    // lastManualOverrideState(false),     // DEPRECATED: replaced by IdleLogic
-    // lastManualOverrideCheck(0),         // DEPRECATED: replaced by IdleLogic
     buzzerStartTime(0),
     buzzerDuration(0),
     buzzerActive(false),
@@ -64,28 +61,26 @@ StateManager::StateManager() :
     altitudeTestEnabled(false),
     altitudeTestThreshold(0.0f),
     velocityTestEnabled(false),
-    velocityTestThreshold(500),  // Default 500 cm/s (5.0 m/s)
-    velocityTestMinAltitude(121920), // Default 4000ft (121920 cm) minimum altitude
+    velocityTestThreshold(500),
+    velocityTestMinAltitude(121920),
     previousAltitude(0),
     previousTimestamp(0),
     velocityTestTriggered(false),
-    currentVelocity(0) {  // Initialize current velocity    // Initialize buzzer pin
+    currentVelocity(0) {
+    
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, LOW);
-    
-    // Initialize manual override pin
-    pinMode(MANUAL_OVERRIDE_PIN, INPUT);  // A1 is 0 by default, button makes it 1
-    
-    // Initialize IdleLogic
-    IdleLogic::init();
+    pinMode(MANUAL_OVERRIDE_PIN, INPUT);
 }
 
 SystemState StateManager::getCurrentState() const {
+    // This function is called from multiple threads
+    // The caller should hold the stateMutex
     return currentState;
 }
 
 bool StateManager::changeState(SystemState newState) {
-    // If we're already in the requested state, consider it a success
+    // This function should be called with stateMutex held
     if (currentState == newState) {
         return true;
     }
@@ -93,215 +88,179 @@ bool StateManager::changeState(SystemState newState) {
     // Validate transitions
     switch (currentState) {
         case STATE_IDLE:
-            // From IDLE, can go to TEST or ARMED
             if (newState != STATE_TEST && newState != STATE_ARMED) {
                 return false;
             }
             break;
             
         case STATE_TEST:
-            // From TEST, can go to IDLE or ARMED
             if (newState != STATE_IDLE && newState != STATE_ARMED) {
                 return false;
             }
             break;
             
         case STATE_ARMED:
-            // From ARMED, can go to IDLE or RECOVERY
             if (newState != STATE_IDLE && newState != STATE_RECOVERY) {
                 return false;
             }
             break;
             
         case STATE_RECOVERY:
-            // From RECOVERY, can only go to IDLE
             if (newState != STATE_IDLE) {
                 return false;
             }
             break;
-    }    
+    }
     
-    // If transition is allowed, update state
     // Execute state transitions
-    switch (newState) {        
+    switch (newState) {
         case STATE_IDLE:
-            // Stop any active systems
             stopBuzzer();
-            // Play state change sound
             startBuzzerSound(STATE_IDLE);
-            // Report state change
             Serial.println("<DEBUG:STATE_CHANGE:IDLE>");
             Serial.println("<DEBUG:TELEMETRY:STOPPED>");
             break;
-              
+            
         case STATE_TEST:
-            // Initialize test mode
             startBuzzerSound(STATE_TEST);
             Serial.println("<DEBUG:STATE_CHANGE:TEST>");
             Serial.println("<DEBUG:TELEMETRY:TEST_MODE>");
             break;
-              
+            
         case STATE_ARMED:
-            // Initialize armed mode
             armedTimestamp = millis();
             lastMotionTimestamp = millis();
             inMotion = false;
             startBuzzerSound(STATE_ARMED);
             Serial.println("<DEBUG:STATE_CHANGE:ARMED>");
-            
-            // Start telemetry at default rate (20Hz)
             Serial.println("<DEBUG:TELEMETRY:STARTING_20HZ>");
             startTelemetry(20);
             break;
-              
+            
         case STATE_RECOVERY:
-            // Initialize recovery mode with buzzer
             Serial.println("<DEBUG:STATE_CHANGE:RECOVERY>");
             startBuzzerSound(STATE_RECOVERY);
             Serial.println("<DEBUG:TELEMETRY:RECOVERY_MODE_1HZ>");
             break;
     }
     
-    // Update state
     currentState = newState;
     return true;
 }
 
 bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
-    // Process commands that might change state
+    // This function should be called with stateMutex held
     switch (cmd) {
         case CMD_DISARM:
-            // DISARM is always allowed and takes us to IDLE
             if (currentState != STATE_IDLE) {
                 changeState(STATE_IDLE);
             }
-            // DISARM should always succeed even if already in IDLE state
             return true;
-              
+            
         case CMD_ARM:
-            // ARM is allowed from IDLE or TEST, takes us to ARMED
             if (currentState == STATE_IDLE || currentState == STATE_TEST) {
                 return changeState(STATE_ARMED);
             } else if (currentState == STATE_ARMED) {
-                // Already in ARMED state, still return success
                 return true;
             }
             break;
-              
+            
         case CMD_ENTER_TEST:
-            // ENTER_TEST is only allowed from IDLE
             if (currentState == STATE_IDLE) {
                 return changeState(STATE_TEST);
             } else if (currentState == STATE_TEST) {
-                // Already in TEST state, still return success
                 return true;
             }
             break;
-              
+            
         case CMD_ENTER_RECOVERY:
-            // ENTER_RECOVERY is only allowed from ARMED
             if (currentState == STATE_ARMED) {
                 return changeState(STATE_RECOVERY);
             } else if (currentState == STATE_RECOVERY) {
-                // Already in RECOVERY state, still return success
                 return true;
             }
             break;
-              case CMD_NAVC_RESET_STATS:
-            // This command is always allowed
-            // Forward to NAVC via UART2
-            Serial2.println("RESET_STATS");
             
-            // Log the action
+        case CMD_NAVC_RESET_STATS:
+            // Send command to NAVC via UART2
+            // Need to be careful with thread safety here
+            if (xSemaphoreTake(uartMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                Serial2.println("RESET_STATS");
+                xSemaphoreGive(uartMutex);
+            }
+            
             char buffer[64];
             FrameCodec::formatDebug(buffer, sizeof(buffer), "NAVC_STATS_RESET_REQUESTED");
             Serial.println(buffer);
             return true;
-            break;              case CMD_TEST_DEVICE:
-            // This command sends a buzzer test request to NAVC
+            
+        case CMD_TEST_DEVICE:
             if (isCommandAllowed(cmd)) {
-                // Send the command to NAVC to test buzzer
-                // Use a proper command format the NAVC will recognize
-                Serial2.println("<ECHO:BUZZER_TEST>");
+                if (xSemaphoreTake(uartMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    Serial2.println("<ECHO:BUZZER_TEST>");
+                    xSemaphoreGive(uartMutex);
+                }
                 
                 char buffer[64];
-                FrameCodec::formatDebug(buffer, sizeof(buffer), "TEST_DEVICE_REQUESTED");                Serial.println(buffer);
+                FrameCodec::formatDebug(buffer, sizeof(buffer), "TEST_DEVICE_REQUESTED");
+                Serial.println(buffer);
                 return true;
             }
-            break;        case CMD_TEST_SERVO:
-            // This command tests the servo movement on pin PB14
+            break;
+            
+        case CMD_TEST_SERVO:
             if (isCommandAllowed(cmd)) {
-                // Create a servo object and attach it to the pin
+                // Servo test needs to be blocking, so we'll do it here
                 Servo testServo;
                 testServo.attach(SERVO_PIN);
-                
-                // Move to 90 degrees
                 testServo.write(70);
-                delay(5000); // Wait for servo to reach position
-                
-                // Move back to 0 degrees
+                vTaskDelay(pdMS_TO_TICKS(5000));
                 testServo.write(0);
-                delay(1000); // Wait for servo to reach position
-                
-                // Detach servo to prevent jitter
+                vTaskDelay(pdMS_TO_TICKS(1000));
                 testServo.detach();
                 
                 char buffer[64];
                 FrameCodec::formatDebug(buffer, sizeof(buffer), "SERVO_TEST_COMPLETED");
-                Serial.println(buffer);                return true;
+                Serial.println(buffer);
+                return true;
             }
             break;
-              case CMD_TEST_ALTITUDE:
-            // This command tests altitude threshold, buzzer and servo in TEST state
+            
+        case CMD_TEST_ALTITUDE:
             if (isCommandAllowed(cmd)) {
-                // Get the current altitude from the NAVC's latest packet
-                const SensorPacket& packet = uartManager.getLatestPacket();
+                // Get current altitude from NAVC
+                SensorPacket packet;
+                if (xSemaphoreTake(uartMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    packet = uartManager.getLatestPacket();
+                    xSemaphoreGive(uartMutex);
+                }
                 
-                // Get altitude in meters (packet.altitude is in cm)
-                float altitudeMeters = packet.altitude / 100.0f;                // Default threshold (in meters) - can be overridden by command parameter
+                float altitudeMeters = packet.altitude / 100.0f;
                 float altitudeThreshold = 2.0f;
                 
-                // Check if we received a threshold parameter with the command
+                // Parse threshold parameter if provided
                 const char* params = strchr(cmdBuffer + 5, ':');
                 if (params) {
-                    // Skip the colon
                     params++;
-                    
-                    // Look for threshold parameter
                     if (strstr(params, "threshold=") != nullptr) {
-                        // Use CmdParser to extract the value
-                        char paramKey[16];
-                        int32_t thresholdCm;
-                        
-                        // Make a copy of the parameter string
                         char paramCopy[64];
                         strncpy(paramCopy, params, sizeof(paramCopy) - 1);
                         paramCopy[sizeof(paramCopy) - 1] = '\0';
                         
-                        // Find the end of the parameters (could be a colon for checksum or right bracket)
                         char* end = strchr(paramCopy, ':');
                         if (end) *end = '\0';
                         end = strchr(paramCopy, '>');
                         if (end) *end = '\0';
                         
-                        // Use strtok to get threshold parameter
                         char* token = strtok(paramCopy, ",");
                         while (token != NULL) {
                             char* equals = strchr(token, '=');
                             if (equals) {
-                                // Extract key
-                                size_t keyLen = equals - token;
-                                if (keyLen < sizeof(paramKey)) {
-                                    strncpy(paramKey, token, keyLen);
-                                    paramKey[keyLen] = '\0';
-                                    
-                                    // If key is threshold, parse value
-                                    if (strcmp(paramKey, "threshold") == 0) {
-                                        thresholdCm = atol(equals + 1);
-                                        // Convert from cm to meters
-                                        altitudeThreshold = thresholdCm / 100.0f;
-                                        break;
-                                    }
+                                *equals = '\0';
+                                if (strcmp(token, "threshold") == 0) {
+                                    int32_t thresholdCm = atol(equals + 1);
+                                    altitudeThreshold = thresholdCm / 100.0f;
+                                    break;
                                 }
                             }
                             token = strtok(NULL, ",");
@@ -313,28 +272,21 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
                 snprintf(buffer, sizeof(buffer), "<DEBUG:ALTITUDE_TEST:CURRENT_ALT=%.2fm,THRESHOLD=%.2fm>", 
                          altitudeMeters, altitudeThreshold);
                 Serial.println(buffer);
-                  // Check if above threshold
+                
                 if (altitudeMeters >= altitudeThreshold) {
-                    // Sound the buzzer
                     toneMaxVolume(BUZZER_PIN, TONE_TEST);
-                    delay(500); // Buzzer sound duration
+                    vTaskDelay(pdMS_TO_TICKS(500));
                     noToneMaxVolume(BUZZER_PIN);
                     
-                    // Move the servo to 90 degrees and back
                     Servo testServo;
                     testServo.attach(SERVO_PIN);
-                    
-                    // Move to 90 degrees
                     testServo.write(90);
-                    delay(500); // Wait for servo to reach position
-                    
-                    // Move back to 0 degrees
+                    vTaskDelay(pdMS_TO_TICKS(500));
                     testServo.write(0);
-                    delay(500); // Wait for servo to reach position
-                    
-                    // Detach servo to prevent jitter
+                    vTaskDelay(pdMS_TO_TICKS(500));
                     testServo.detach();
-                      FrameCodec::formatDebug(buffer, sizeof(buffer), "ALTITUDE_TEST_TRIGGERED");
+                    
+                    FrameCodec::formatDebug(buffer, sizeof(buffer), "ALTITUDE_TEST_TRIGGERED");
                 } else {
                     FrameCodec::formatDebug(buffer, sizeof(buffer), "ALTITUDE_BELOW_THRESHOLD");
                 }
@@ -345,52 +297,32 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
             break;
             
         case CMD_ENABLE_ALTITUDE_TEST:
-            // Enable background altitude test with specified threshold
             if (isCommandAllowed(cmd)) {
-                // Default threshold (in meters) - can be overridden by command parameter
                 float threshold = 2.0f;
                 
-                // Check if we received a threshold parameter with the command
+                // Parse threshold parameter
                 const char* params = strchr(cmdBuffer + 5, ':');
                 if (params) {
-                    // Skip the colon
                     params++;
-                    
-                    // Look for threshold parameter
                     if (strstr(params, "threshold=") != nullptr) {
-                        // Use same parsing logic as before
-                        char paramKey[16];
-                        int32_t thresholdCm;
-                        
-                        // Make a copy of the parameter string
                         char paramCopy[64];
                         strncpy(paramCopy, params, sizeof(paramCopy) - 1);
                         paramCopy[sizeof(paramCopy) - 1] = '\0';
                         
-                        // Find the end of the parameters
                         char* end = strchr(paramCopy, ':');
                         if (end) *end = '\0';
                         end = strchr(paramCopy, '>');
                         if (end) *end = '\0';
                         
-                        // Use strtok to get threshold parameter
                         char* token = strtok(paramCopy, ",");
                         while (token != NULL) {
                             char* equals = strchr(token, '=');
                             if (equals) {
-                                // Extract key
-                                size_t keyLen = equals - token;
-                                if (keyLen < sizeof(paramKey)) {
-                                    strncpy(paramKey, token, keyLen);
-                                    paramKey[keyLen] = '\0';
-                                    
-                                    // If key is threshold, parse value
-                                    if (strcmp(paramKey, "threshold") == 0) {
-                                        thresholdCm = atol(equals + 1);
-                                        // Convert from cm to meters - no max limit
-                                        threshold = thresholdCm / 100.0f;
-                                        break;
-                                    }
+                                *equals = '\0';
+                                if (strcmp(token, "threshold") == 0) {
+                                    int32_t thresholdCm = atol(equals + 1);
+                                    threshold = thresholdCm / 100.0f;
+                                    break;
                                 }
                             }
                             token = strtok(NULL, ",");
@@ -398,7 +330,6 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
                     }
                 }
                 
-                // Enable the background altitude test
                 altitudeTestEnabled = true;
                 altitudeTestThreshold = threshold;
                 
@@ -410,8 +341,8 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
                 return true;
             }
             break;
-              case CMD_DISABLE_ALTITUDE_TEST:
-            // Disable background altitude test
+            
+        case CMD_DISABLE_ALTITUDE_TEST:
             if (isCommandAllowed(cmd)) {
                 altitudeTestEnabled = false;
                 altitudeTestThreshold = 0.0f;
@@ -424,49 +355,38 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
             break;
             
         case CMD_VELOCITY_TEST:
-            // This command tests velocity threshold and servo in TEST state (one-time test)
             if (isCommandAllowed(cmd)) {
-                // Get the current altitude from the NAVC's latest packet
-                const SensorPacket& packet = uartManager.getLatestPacket();
+                // Get current altitude from NAVC
+                SensorPacket packet;
+                if (xSemaphoreTake(uartMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    packet = uartManager.getLatestPacket();
+                    xSemaphoreGive(uartMutex);
+                }
                 
-                // Get altitude in meters (packet.altitude is in cm)
                 float currentAltitude = packet.altitude / 100.0f;
-                
-                // Default threshold (in m/s) - can be overridden by command parameter
                 float velocityThreshold = 5.0f;
                 
-                // Check if we received a threshold parameter with the command
+                // Parse threshold parameter
                 const char* params = strchr(cmdBuffer + 5, ':');
                 if (params) {
-                    // Skip the colon
                     params++;
-                    
-                    // Look for threshold parameter
                     if (strstr(params, "threshold=") != nullptr) {
-                        // Parse the threshold value (expecting integer m/s)
-                        char paramKey[16];
-                        int32_t thresholdInt;
-                        
-                        // Make a copy of the parameter string
                         char paramCopy[64];
                         strncpy(paramCopy, params, sizeof(paramCopy) - 1);
                         paramCopy[sizeof(paramCopy) - 1] = '\0';
                         
-                        // Find the end of the parameters
                         char* endParams = strchr(paramCopy, '>');
                         if (endParams) {
                             *endParams = '\0';
                         }
                         
-                        // Parse parameters using strtok
                         char* token = strtok(paramCopy, ",");
                         while (token != nullptr) {
-                            // Parse each parameter key=value pair
                             char* equals = strchr(token, '=');
                             if (equals) {
                                 *equals = '\0';
                                 if (strcmp(token, "threshold") == 0) {
-                                    thresholdInt = atol(equals + 1);
+                                    int32_t thresholdInt = atol(equals + 1);
                                     velocityThreshold = (float)thresholdInt;
                                     break;
                                 }
@@ -481,39 +401,28 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
                          currentAltitude, velocityThreshold);
                 Serial.println(buffer);
                 
-                // For one-time test, calculate velocity if we have previous data
                 bool canCalculateVelocity = (previousTimestamp > 0);
                 
                 if (canCalculateVelocity) {
-                    // Calculate current velocity
                     unsigned long timeDelta = packet.timestamp - previousTimestamp;
                     
-                    if (timeDelta > 0 && timeDelta < 1000) { // Valid time delta
+                    if (timeDelta > 0 && timeDelta < 1000) {
                         float currentVelocity = (currentAltitude - previousAltitude) / (timeDelta / 1000.0f);
                         
                         snprintf(buffer, sizeof(buffer), "<DEBUG:VELOCITY_TEST:CALCULATED_VEL=%.2fm/s>", currentVelocity);
                         Serial.println(buffer);
                         
-                        // Check if velocity is positive and at/below threshold (simulating apogee approach)
                         if (currentVelocity > 0 && currentVelocity <= velocityThreshold && currentAltitude >= velocityTestMinAltitude) {
-                            // Sound the buzzer
                             toneMaxVolume(BUZZER_PIN, TONE_TEST);
-                            delay(500); // Buzzer sound duration
+                            vTaskDelay(pdMS_TO_TICKS(500));
                             noToneMaxVolume(BUZZER_PIN);
                             
-                            // Move the servo to 90 degrees and back
                             Servo testServo;
                             testServo.attach(SERVO_PIN);
-                            
-                            // Move to 90 degrees
                             testServo.write(90);
-                            delay(500); // Wait for servo to reach position
-                            
-                            // Move back to 0 degrees
+                            vTaskDelay(pdMS_TO_TICKS(500));
                             testServo.write(0);
-                            delay(500); // Wait for servo to reach position
-                            
-                            // Detach servo to prevent jitter
+                            vTaskDelay(pdMS_TO_TICKS(500));
                             testServo.detach();
                             
                             FrameCodec::formatDebug(buffer, sizeof(buffer), "VELOCITY_TEST_TRIGGERED");
@@ -527,7 +436,6 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
                     FrameCodec::formatDebug(buffer, sizeof(buffer), "VELOCITY_NO_PREVIOUS_DATA");
                 }
                 
-                // Update previous data for next calculation
                 previousAltitude = currentAltitude;
                 previousTimestamp = packet.timestamp;
                 
@@ -535,45 +443,32 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
                 return true;
             }
             break;
-              case CMD_ENABLE_VELOCITY_TEST:
-            // Enable background velocity test with specified threshold
+            
+        case CMD_ENABLE_VELOCITY_TEST:
             if (isCommandAllowed(cmd)) {
-                // Default threshold (in cm/s) - 500 cm/s = 5.0 m/s
                 int32_t threshold = 500;
                 
-                // Check if we received a threshold parameter with the command
+                // Parse threshold parameter
                 const char* params = strchr(cmdBuffer + 5, ':');
                 if (params) {
-                    // Skip the colon
                     params++;
-                    
-                    // Look for threshold parameter
                     if (strstr(params, "threshold=") != nullptr) {
-                        // Parse the threshold value (expecting integer m/s, convert to cm/s)
-                        char paramKey[16];
-                        int32_t thresholdMetersPerSec;
-                        
-                        // Make a copy of the parameter string
                         char paramCopy[64];
                         strncpy(paramCopy, params, sizeof(paramCopy) - 1);
                         paramCopy[sizeof(paramCopy) - 1] = '\0';
                         
-                        // Find the end of the parameters
                         char* endParams = strchr(paramCopy, '>');
                         if (endParams) {
                             *endParams = '\0';
                         }
                         
-                        // Parse parameters using strtok
                         char* token = strtok(paramCopy, ",");
                         while (token != nullptr) {
-                            // Parse each parameter key=value pair
                             char* equals = strchr(token, '=');
                             if (equals) {
                                 *equals = '\0';
                                 if (strcmp(token, "threshold") == 0) {
-                                    thresholdMetersPerSec = atol(equals + 1);
-                                    // Convert m/s to cm/s
+                                    int32_t thresholdMetersPerSec = atol(equals + 1);
                                     threshold = thresholdMetersPerSec * 100;
                                     break;
                                 }
@@ -583,11 +478,10 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
                     }
                 }
                 
-                // Enable the background velocity test
                 velocityTestEnabled = true;
                 velocityTestThreshold = threshold;
                 velocityTestTriggered = false;
-                previousTimestamp = 0; // Reset for fresh calculations
+                previousTimestamp = 0;
                 
                 char buffer[128];
                 snprintf(buffer, sizeof(buffer), "<DEBUG:VELOCITY_TEST_ENABLED:THRESHOLD=%ldcm/s,MIN_ALT=%ldcm>", 
@@ -598,11 +492,11 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
                 return true;
             }
             break;
-              case CMD_DISABLE_VELOCITY_TEST:
-            // Disable background velocity test
+            
+        case CMD_DISABLE_VELOCITY_TEST:
             if (isCommandAllowed(cmd)) {
                 velocityTestEnabled = false;
-                velocityTestThreshold = 500; // Reset to default 500 cm/s (5.0 m/s)
+                velocityTestThreshold = 500;
                 velocityTestTriggered = false;
                 previousTimestamp = 0;
                 
@@ -614,7 +508,6 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
             break;
             
         default:
-            // Other commands don't change state, check if they're allowed
             return isCommandAllowed(cmd);
     }
     
@@ -622,32 +515,28 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
 }
 
 bool StateManager::isCommandAllowed(CommandType cmd) const {
-    // Commands that are always allowed in any state
+    // This function should be called with stateMutex held
     if (cmd == CMD_DISARM || cmd == CMD_QUERY || cmd == CMD_NAVC_RESET_STATS) {
         return true;
     }
     
-    // Check state-specific command permissions
-    switch (currentState) {        case STATE_IDLE:
-            // In IDLE, all commands except TEST_DEVICE, TEST_SERVO, TEST_ALTITUDE, and velocity test commands are allowed
+    switch (currentState) {
+        case STATE_IDLE:
             return (cmd != CMD_TEST_DEVICE && cmd != CMD_TEST_SERVO && cmd != CMD_TEST_ALTITUDE && 
                     cmd != CMD_ENABLE_ALTITUDE_TEST && cmd != CMD_DISABLE_ALTITUDE_TEST &&
                     cmd != CMD_VELOCITY_TEST && cmd != CMD_ENABLE_VELOCITY_TEST && cmd != CMD_DISABLE_VELOCITY_TEST);
             
         case STATE_TEST:
-            // In TEST, only TEST, QUERY, ARM, TEST_DEVICE, TEST_SERVO, TEST_ALTITUDE, altitude test, and velocity test commands are allowed
             return (cmd == CMD_TEST || cmd == CMD_ARM || cmd == CMD_TEST_DEVICE || cmd == CMD_TEST_SERVO || 
                     cmd == CMD_TEST_ALTITUDE || cmd == CMD_ENABLE_ALTITUDE_TEST || cmd == CMD_DISABLE_ALTITUDE_TEST ||
                     cmd == CMD_VELOCITY_TEST || cmd == CMD_ENABLE_VELOCITY_TEST || cmd == CMD_DISABLE_VELOCITY_TEST);
             
         case STATE_ARMED:
-            // In ARMED, all commands except TEST, TEST_DEVICE, TEST_SERVO, TEST_ALTITUDE, and velocity test commands are allowed
-            // Note: Background altitude test can run in ARMED state, but enabling/disabling is not allowed
             return (cmd != CMD_TEST && cmd != CMD_TEST_DEVICE && cmd != CMD_TEST_SERVO && cmd != CMD_TEST_ALTITUDE &&
                     cmd != CMD_ENABLE_ALTITUDE_TEST && cmd != CMD_DISABLE_ALTITUDE_TEST &&
                     cmd != CMD_VELOCITY_TEST && cmd != CMD_ENABLE_VELOCITY_TEST && cmd != CMD_DISABLE_VELOCITY_TEST);
-              case STATE_RECOVERY:
-            // In RECOVERY, no commands are allowed except the always-allowed ones (DISARM already handled)
+            
+        case STATE_RECOVERY:
             return false;
             
         default:
@@ -656,12 +545,8 @@ bool StateManager::isCommandAllowed(CommandType cmd) const {
 }
 
 void StateManager::updateState() {
-    // Run IDLE state background logic
-    if (currentState == STATE_IDLE) {
-        IdleLogic::update(cmdParser);
-    }
-    
-    // Check for auto-recovery condition when in ARMED state
+    // This function should be called with stateMutex held
+    // Check for auto-recovery condition
     if (currentState == STATE_ARMED && shouldAutoRecovery()) {
         changeState(STATE_RECOVERY);
         
@@ -670,23 +555,15 @@ void StateManager::updateState() {
         Serial.println(buffer);
     }
     
-    // Run ARMED state background logic
-    if (currentState == STATE_ARMED) {
-        ArmedLogic::update();
-    }
-    
-    // Check background altitude test if enabled
+    // Check background tests
     checkBackgroundAltitudeTest();
-    
-    // Check background velocity test if enabled
     checkBackgroundVelocityTest();
     
-    // Update buzzer state (non-blocking sound handling)
+    // Update buzzer sound
     updateBuzzerSound();
 }
 
 bool StateManager::shouldAutoRecovery() {
-    // Check if we've been in ARMED state with no motion for AUTO_RECOVERY_TIMEOUT
     if (inMotion) {
         return false;
     }
@@ -695,26 +572,23 @@ bool StateManager::shouldAutoRecovery() {
     unsigned long armedDuration = now - armedTimestamp;
     unsigned long noMotionDuration = now - lastMotionTimestamp;
     
-    // Must be armed for at least AUTO_RECOVERY_TIMEOUT and no motion for the same duration
     return (armedDuration > AUTO_RECOVERY_TIMEOUT && noMotionDuration > AUTO_RECOVERY_TIMEOUT);
 }
 
 void StateManager::reportMotion(float accelMagnitude) {
-    // Update motion detection based on accelerometer magnitude
+    // This function should be called with stateMutex held
     bool motionDetected = abs(accelMagnitude - 1.0) > NO_MOTION_THRESHOLD;
     
     if (motionDetected) {
         lastMotionTimestamp = millis();
         inMotion = true;
     } else {
-        // If no motion for a while, update the flag
-        if (millis() - lastMotionTimestamp > 10000) { // 10 seconds of no motion
+        if (millis() - lastMotionTimestamp > 10000) {
             inMotion = false;
         }
     }
 }
 
-// Get state string from enum value (helper for internal use)
 const char* StateManager::getStateStringFromEnum(SystemState state) const {
     switch (state) {
         case STATE_IDLE:
@@ -734,7 +608,6 @@ const char* StateManager::getStateString() const {
     return getStateStringFromEnum(currentState);
 }
 
-// Velocity test data access methods
 bool StateManager::isVelocityTestEnabled() const {
     return velocityTestEnabled;
 }
@@ -751,88 +624,40 @@ bool StateManager::hasVelocityData() const {
     return (previousTimestamp > 0);
 }
 
-// DEPRECATED: Check for manual override button press (IDLE to ARMED transition)
-// This functionality has been replaced by IdleLogic which uses the command parser
-/*
-void StateManager::checkManualOverride() {
-    // Only check manual override when in IDLE state
-    if (currentState != STATE_IDLE) {
-        return;
-    }
-    
-    unsigned long currentTime = millis();
-    
-    // Debounce the button reading
-    if (currentTime - lastManualOverrideCheck < MANUAL_OVERRIDE_DEBOUNCE) {
-        return;
-    }
-    
-    lastManualOverrideCheck = currentTime;
-    
-    // Read the current state of the manual override pin
-    bool currentPinState = digitalRead(MANUAL_OVERRIDE_PIN);
-    
-    // Check for button press (transition from LOW to HIGH)
-    if (currentPinState && !lastManualOverrideState) {
-        // Button pressed! Transition from IDLE to ARMED
-        if (changeState(STATE_ARMED)) {
-            char buffer[128];
-            FrameCodec::formatDebug(buffer, sizeof(buffer), "MANUAL_OVERRIDE_TRIGGERED:IDLE_TO_ARMED");
-            Serial.println(buffer);
-            
-            // Additional debug info
-            Serial.println("<DEBUG:MANUAL_OVERRIDE:BUTTON_PRESSED_A1>");
-        }
-    }
-    
-    // Update the last state for next comparison
-    lastManualOverrideState = currentPinState;
-}
-*/
-
-// Check background velocity test and trigger servo sequence if velocity threshold conditions are met
 void StateManager::checkBackgroundVelocityTest() {
-    // Only check if velocity test is enabled and not already triggered
     if (!velocityTestEnabled || velocityTestTriggered) {
         return;
     }
     
-    // Get the current altitude from the NAVC's latest packet
-    const SensorPacket& packet = uartManager.getLatestPacket();
+    SensorPacket packet;
+    if (xSemaphoreTake(uartMutex, pdMS_TO_TICKS(1)) == pdTRUE) {
+        packet = uartManager.getLatestPacket();
+        xSemaphoreGive(uartMutex);
+    } else {
+        return;
+    }
     
-    // Work with altitude directly in cm to avoid float arithmetic
     int32_t currentAltitudeCm = packet.altitude;
     
-    // Check if we have previous data to calculate velocity
     if (previousTimestamp == 0) {
-        // First measurement - initialize tracking data
         previousAltitude = currentAltitudeCm;
         previousTimestamp = packet.timestamp;
         return;
     }
     
-    // Calculate time delta
     unsigned long timeDelta = packet.timestamp - previousTimestamp;
     
-    // Validate data - skip invalid packets
     if (timeDelta == 0 || timeDelta > 1000 || packet.timestamp <= previousTimestamp) {
-        return; // Skip invalid data
+        return;
     }
     
-    // Validate altitude - basic sanity check (within 100km of ground)
     if (abs(packet.altitude) > 10000000) {
-        return; // Skip obviously invalid altitude
+        return;
     }
     
-    // Calculate current velocity in cm/s (positive = ascending, negative = descending)
-    // velocity = (altitudeDelta in cm) / (timeDelta in seconds)
     int32_t altitudeDeltaCm = currentAltitudeCm - previousAltitude;
-    currentVelocity = (altitudeDeltaCm * 1000) / (int32_t)timeDelta; // cm/s
+    currentVelocity = (altitudeDeltaCm * 1000) / (int32_t)timeDelta;
     
-    // Check velocity test conditions (must be positive velocity while going up)
-    bool velocityAtThreshold = (currentVelocity > 0 && currentVelocity <= velocityTestThreshold);
-    bool altitudeMinimumMet = (currentAltitudeCm >= velocityTestMinAltitude);
-    bool velocityPositive = (currentVelocity > 0);      // Debug output every 1 second (1Hz)
     static unsigned long lastDebugTime = 0;
     if (millis() - lastDebugTime > 1000) {
         char debugBuffer[128];
@@ -843,36 +668,29 @@ void StateManager::checkBackgroundVelocityTest() {
         lastDebugTime = millis();
     }
     
-    // Check if all conditions are met for triggering
+    bool velocityAtThreshold = (currentVelocity > 0 && currentVelocity <= velocityTestThreshold);
+    bool altitudeMinimumMet = (currentAltitudeCm >= velocityTestMinAltitude);
+    bool velocityPositive = (currentVelocity > 0);
+    
     if (velocityAtThreshold && altitudeMinimumMet && velocityPositive) {
-        // Threshold reached! Execute servo sequence
         char buffer[128];
         snprintf(buffer, sizeof(buffer), 
                 "<DEBUG:BACKGROUND_VELOCITY_TEST_TRIGGERED:ALT=%ldcm,VEL=%ldcm/s,THRESHOLD=%ldcm/s>", 
                 currentAltitudeCm, currentVelocity, velocityTestThreshold);
         Serial.println(buffer);
         
-        // Sound the buzzer
         toneMaxVolume(BUZZER_PIN, TONE_TEST);
-        delay(500); // Buzzer sound duration
+        vTaskDelay(pdMS_TO_TICKS(500));
         noToneMaxVolume(BUZZER_PIN);
         
-        // Move the servo to 90 degrees and back
         Servo testServo;
         testServo.attach(SERVO_PIN);
-        
-        // Move to 90 degrees
         testServo.write(90);
-        delay(500); // Wait for servo to reach position
-        
-        // Move back to 0 degrees
+        vTaskDelay(pdMS_TO_TICKS(500));
         testServo.write(0);
-        delay(500); // Wait for servo to reach position
-        
-        // Detach servo to prevent jitter
+        vTaskDelay(pdMS_TO_TICKS(500));
         testServo.detach();
         
-        // Mark as triggered and disable the velocity test after triggering (one-time use)
         velocityTestTriggered = true;
         velocityTestEnabled = false;
         
@@ -880,54 +698,44 @@ void StateManager::checkBackgroundVelocityTest() {
         Serial.println(buffer);
     }
     
-    // Update previous data for next calculation
     previousAltitude = currentAltitudeCm;
     previousTimestamp = packet.timestamp;
 }
 
-// Check background altitude test and trigger servo sequence if altitude threshold is met
 void StateManager::checkBackgroundAltitudeTest() {
-    // Only check if altitude test is enabled
     if (!altitudeTestEnabled) {
         return;
     }
     
-    // Get the current altitude from the NAVC's latest packet
-    const SensorPacket& packet = uartManager.getLatestPacket();
+    SensorPacket packet;
+    if (xSemaphoreTake(uartMutex, pdMS_TO_TICKS(1)) == pdTRUE) {
+        packet = uartManager.getLatestPacket();
+        xSemaphoreGive(uartMutex);
+    } else {
+        return;
+    }
     
-    // Convert altitude from cm to meters for comparison with threshold
     float currentAltitudeM = packet.altitude / 100.0f;
     
-    // Check if altitude meets or exceeds threshold
     if (currentAltitudeM >= altitudeTestThreshold) {
-        // Threshold reached! Execute servo sequence
         char buffer[128];
         snprintf(buffer, sizeof(buffer), 
                 "<DEBUG:BACKGROUND_ALTITUDE_TEST_TRIGGERED:ALT=%.2fm,THRESHOLD=%.2fm>", 
                 currentAltitudeM, altitudeTestThreshold);
         Serial.println(buffer);
         
-        // Sound the buzzer
         toneMaxVolume(BUZZER_PIN, TONE_TEST);
-        delay(500); // Buzzer sound duration
+        vTaskDelay(pdMS_TO_TICKS(500));
         noToneMaxVolume(BUZZER_PIN);
         
-        // Move the servo to 90 degrees and back
         Servo testServo;
         testServo.attach(SERVO_PIN);
-        
-        // Move to 90 degrees
         testServo.write(90);
-        delay(500); // Wait for servo to reach position
-        
-        // Move back to 0 degrees
+        vTaskDelay(pdMS_TO_TICKS(500));
         testServo.write(0);
-        delay(500); // Wait for servo to reach position
-        
-        // Detach servo to prevent jitter
+        vTaskDelay(pdMS_TO_TICKS(500));
         testServo.detach();
         
-        // Disable the altitude test after triggering (one-time use)
         altitudeTestEnabled = false;
         
         FrameCodec::formatDebug(buffer, sizeof(buffer), "BACKGROUND_ALTITUDE_TEST_COMPLETE_DISABLED");
@@ -935,131 +743,109 @@ void StateManager::checkBackgroundAltitudeTest() {
     }
 }
 
-// Start a buzzer sound pattern for the specific state
 void StateManager::startBuzzerSound(SystemState state) {
-    // Stop any current sound
     noToneMaxVolume(BUZZER_PIN);
     digitalWrite(BUZZER_PIN, LOW);
     
-    // Set up for the new sound sequence
     pendingSoundState = state;
     soundSequenceStep = 0;
     buzzerActive = false;
     buzzerStartTime = millis();
     buzzerDuration = 0;
     
-    // Immediate first beep based on state - set to maximum volume frequencies
     switch (state) {
         case STATE_IDLE:
-            // Loud initial tone for IDLE
-            toneMaxVolume(BUZZER_PIN, TONE_IDLE); // Using custom max volume function
+            toneMaxVolume(BUZZER_PIN, TONE_IDLE);
             buzzerActive = true;
             buzzerDuration = SHORT_BEEP;
             break;
             
         case STATE_TEST:
-            // Loud initial tone for TEST
-            toneMaxVolume(BUZZER_PIN, TONE_TEST); // Using custom max volume function
+            toneMaxVolume(BUZZER_PIN, TONE_TEST);
             buzzerActive = true;
             buzzerDuration = SHORT_BEEP;
             break;
             
         case STATE_ARMED:
-            // Loud initial tone for ARMED
-            toneMaxVolume(BUZZER_PIN, TONE_ARMED); // Using custom max volume function
+            toneMaxVolume(BUZZER_PIN, TONE_ARMED);
             buzzerActive = true;
             buzzerDuration = LONG_BEEP;
             break;
             
         case STATE_RECOVERY:
-            // Extra loud tone for RECOVERY
-            toneMaxVolume(BUZZER_PIN, TONE_RECOVERY); // Using custom max volume function
+            toneMaxVolume(BUZZER_PIN, TONE_RECOVERY);
             buzzerActive = true;
             buzzerDuration = SHORT_BEEP;
             break;
             
         default:
-            // Error tone - distinctive loud tone
-            toneMaxVolume(BUZZER_PIN, TONE_ERROR); // Using custom max volume function
+            toneMaxVolume(BUZZER_PIN, TONE_ERROR);
             buzzerActive = true;
             buzzerDuration = LONG_BEEP;
             break;
     }
 }
 
-// Update buzzer sounds during each loop iteration
 void StateManager::updateBuzzerSound() {
     unsigned long currentTime = millis();
     
-    // If a beep is active and its duration has passed, stop it
     if (buzzerActive && (currentTime - buzzerStartTime >= buzzerDuration)) {
-        noToneMaxVolume(BUZZER_PIN); // Use our custom max volume function
+        noToneMaxVolume(BUZZER_PIN);
         digitalWrite(BUZZER_PIN, LOW);
         buzzerActive = false;
         
-        // Move to next step in the sequence
         soundSequenceStep++;
-        
-        // A minimal delay between tones (non-blocking) - shorter for more continuous sound
         buzzerStartTime = currentTime;
-        buzzerDuration = 30; // 30ms gap between tones - reduced for maximum perceived volume
+        buzzerDuration = 30;
         return;
     }
     
-    // If we're in the pause between tones
     if (!buzzerActive && (currentTime - buzzerStartTime >= buzzerDuration)) {
-        // Play the next tone based on current state and sequence step
         switch (pendingSoundState) {
             case STATE_IDLE:
-                // IDLE: Two-tone notification (maximum volume)
                 if (soundSequenceStep < 2) {
-                    // Two loud tones at resonant frequencies
                     int frequencies[] = {2800, 2600};
-                    toneMaxVolume(BUZZER_PIN, frequencies[soundSequenceStep]); // Max volume
+                    toneMaxVolume(BUZZER_PIN, frequencies[soundSequenceStep]);
                     buzzerActive = true;
                     buzzerStartTime = currentTime;
-                    buzzerDuration = 250; // Longer duration for more perceived volume
+                    buzzerDuration = 250;
                     currentBuzzerTone = frequencies[soundSequenceStep];
                 }
                 break;
                 
             case STATE_TEST:
-                // TEST: Maximum volume resonant frequency sweep
                 if (soundSequenceStep < 5) {
-                    // Frequencies in the 2.5-3kHz range for maximum loudness
                     int frequencies[] = {2500, 2600, 2700, 2800, 2900};
-                    toneMaxVolume(BUZZER_PIN, frequencies[soundSequenceStep]); // Max volume
+                    toneMaxVolume(BUZZER_PIN, frequencies[soundSequenceStep]);
                     buzzerActive = true;
                     buzzerStartTime = currentTime;
-                    buzzerDuration = 150; // Slightly longer for more sound energy
+                    buzzerDuration = 150;
                     currentBuzzerTone = frequencies[soundSequenceStep];
                 }
                 break;
-                  case STATE_ARMED:
-                // ARMED: 3 long beeps at IDLE frequency (2800 Hz)
+                
+            case STATE_ARMED:
                 if (soundSequenceStep < 3) {
-                    // Use same frequency as IDLE (2800 Hz) for 3 long beeps
-                    int frequency = TONE_IDLE; // 2800 Hz - same as IDLE
-                    int duration = 400; // Long beep duration
+                    int frequency = TONE_IDLE;
+                    int duration = 400;
                     
-                    toneMaxVolume(BUZZER_PIN, frequency); // Max volume
+                    toneMaxVolume(BUZZER_PIN, frequency);
                     buzzerActive = true;
                     buzzerStartTime = currentTime;
                     buzzerDuration = duration;
                     currentBuzzerTone = frequency;
                 }
-                break;                case STATE_RECOVERY:                
-                // RECOVERY: SOS pattern using IDLE frequency (2800 Hz) for maximum loudness
-                // SOS = · · · — — — · · · (3 short, 3 long, 3 short)
+                break;
+                
+            case STATE_RECOVERY:
                 if (soundSequenceStep < 9) {
-                    int frequency = TONE_IDLE; // Use IDLE frequency (2800 Hz) - loudest measured
+                    int frequency = TONE_IDLE;
                     int duration;
                     
-                    // SOS pattern: short-short-short-long-long-long-short-short-short
                     if (soundSequenceStep < 3 || soundSequenceStep >= 6) {
-                        duration = 150; // Short beeps (dots)
+                        duration = 150;
                     } else {
-                        duration = 400; // Long beeps (dashes)
+                        duration = 400;
                     }
                     
                     toneMaxVolume(BUZZER_PIN, frequency);
@@ -1068,14 +854,12 @@ void StateManager::updateBuzzerSound() {
                     buzzerDuration = duration;
                     currentBuzzerTone = frequency;
                 } else {
-                    // After SOS sequence, wait 2 seconds before repeating
                     if (currentTime - buzzerStartTime >= 2000) {
-                        soundSequenceStep = 0; // Reset sequence to repeat SOS
-                        // Immediate restart - no delay
+                        soundSequenceStep = 0;
                         toneMaxVolume(BUZZER_PIN, TONE_IDLE);
                         buzzerActive = true;
                         buzzerStartTime = currentTime;
-                        buzzerDuration = 150; // Start with first short beep
+                        buzzerDuration = 150;
                         currentBuzzerTone = TONE_IDLE;
                     }
                 }
@@ -1087,58 +871,37 @@ void StateManager::updateBuzzerSound() {
     }
 }
 
-// Stop the buzzer immediately
 void StateManager::stopBuzzer() {
-    noToneMaxVolume(BUZZER_PIN); // Use our custom function to properly clean up the timer
+    noToneMaxVolume(BUZZER_PIN);
     digitalWrite(BUZZER_PIN, LOW);
     buzzerActive = false;
     buzzerDuration = 0;
 }
 
-/**
- * Plays a tone at maximum possible volume by directly configuring 
- * the PWM with 50% duty cycle for maximum power output
- * 
- * @param pin The pin connected to the buzzer 
- * @param frequency The frequency to play
- */
 void toneMaxVolume(uint8_t pin, unsigned int frequency) {
-    // Stop any previous tone
     noToneMaxVolume(pin);
     
-    // Get the timer channel attached to this pin
     TIM_TypeDef* timer_tmp = (TIM_TypeDef*)pinmap_peripheral(digitalPinToPinName(pin), PinMap_PWM);
     uint32_t channel = STM_PIN_CHANNEL(pinmap_function(digitalPinToPinName(pin), PinMap_PWM));
     
-    // Create a hardware timer instance
     buzzerTimer = new HardwareTimer(timer_tmp);
     
-    // Configure PWM with 50% duty cycle for maximum volume
     buzzerTimer->setMode(channel, TIMER_OUTPUT_COMPARE_PWM1, pin);
     buzzerTimer->setOverflow(frequency, HERTZ_FORMAT);
     buzzerTimer->setCaptureCompare(channel, MAX_VOLUME_PWM_DUTY, RESOLUTION_16B_COMPARE_FORMAT);
     
-    // Start the timer
     buzzerTimer->resume();
     
-    // Remember the active pin
     activeBuzzerPin = pin;
 }
 
-/**
- * Stops the tone on the specified pin
- * 
- * @param pin The pin connected to the buzzer
- */
 void noToneMaxVolume(uint8_t pin) {
-    // Only proceed if we have an active timer and it's the right pin
     if (buzzerTimer != nullptr && activeBuzzerPin == pin) {
         buzzerTimer->pause();
         delete buzzerTimer;
         buzzerTimer = nullptr;
         activeBuzzerPin = 0;
         
-        // Reset the pin
         pinMode(pin, OUTPUT);
         digitalWrite(pin, LOW);
     }

@@ -7,6 +7,9 @@
 #include "../include/utils/LoraManager.h"
 #include "../include/config/lora.h"
 
+// Global constant for maximum command length
+static const int MAX_CMD_LENGTH = 128;
+
 // Parameter range definitions for validation
 struct ParamRange {
     int32_t min;
@@ -18,7 +21,6 @@ private:
     StateManager& stateManager;
     
     // Buffer for incoming commands
-    static const int MAX_CMD_LENGTH = 128;
     char cmdBuffer[MAX_CMD_LENGTH];
     int cmdIndex;
     

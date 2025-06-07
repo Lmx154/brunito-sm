@@ -11,6 +11,16 @@
 
 #include <Arduino.h>
 
+// External declarations for buzzer functionality
+extern const int BUZZER_PIN;
+extern const int TONE_IDLE;
+extern const int TONE_TEST;
+extern const int TONE_ARMED;
+extern const int TONE_RECOVERY;
+extern const int TONE_ERROR;
+extern void toneMaxVolume(uint8_t pin, unsigned int frequency);
+extern void noToneMaxVolume(uint8_t pin);
+
 // System States
 enum SystemState {
     STATE_IDLE,
