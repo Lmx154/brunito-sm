@@ -6,6 +6,7 @@
  */
 
 #include "../include/fc/State.h"
+#include "../include/fc/ArmedLogic.h"
 #include "../include/utils/FrameCodec.h"
 #include "../include/navc/Sensors.h"  // For SensorPacket structure
 #include "../include/fc/UartManager.h" // For UartManager
@@ -661,6 +662,11 @@ void StateManager::updateState() {
         char buffer[64];
         FrameCodec::formatDebug(buffer, sizeof(buffer), "AUTO_RECOVERY_TRIGGERED");
         Serial.println(buffer);
+    }
+    
+    // Run ARMED state background logic
+    if (currentState == STATE_ARMED) {
+        ArmedLogic::update();
     }
     
     // Check background altitude test if enabled
