@@ -45,15 +45,14 @@ private:
     unsigned long armedTimestamp;
     unsigned long lastMotionTimestamp;
     bool inMotion;
-    
-    // Constants
+      // Constants
     static const unsigned long AUTO_RECOVERY_TIMEOUT = 1800000; // 30 minutes
     static constexpr float NO_MOTION_THRESHOLD = 0.02; // g
     
-    // Manual override variables
-    bool lastManualOverrideState;
-    unsigned long lastManualOverrideCheck;
-    static const unsigned long MANUAL_OVERRIDE_DEBOUNCE = 50; // 50ms debounce
+    // Manual override variables - DEPRECATED: replaced by IdleLogic
+    // bool lastManualOverrideState;
+    // unsigned long lastManualOverrideCheck;
+    // static const unsigned long MANUAL_OVERRIDE_DEBOUNCE = 50; // 50ms debounce
     
     // Buzzer sound variables
     unsigned long buzzerStartTime;
@@ -72,12 +71,11 @@ private:
     int32_t previousAltitude;       // for velocity calculation (in cm, same as packet.altitude)
     unsigned long previousTimestamp; // for time delta calculation
     bool velocityTestTriggered;   // prevent multiple triggers
-    int32_t currentVelocity;        // current calculated velocity for external access (in cm/s)
-      // Helper method to check inactivity timeout
+    int32_t currentVelocity;        // current calculated velocity for external access (in cm/s)    // Helper method to check inactivity timeout
     bool shouldAutoRecovery();
     
-    // Manual override utility function
-    void checkManualOverride();
+    // Manual override utility function - DEPRECATED: replaced by IdleLogic
+    // void checkManualOverride();
     
     // Buzzer sound utility functions
     void startBuzzerSound(SystemState state);

@@ -7,6 +7,7 @@
 
 #include "../include/fc/State.h"
 #include "../include/fc/ArmedLogic.h"
+#include "../include/fc/IdleLogic.h"
 #include "../include/utils/FrameCodec.h"
 #include "../include/navc/Sensors.h"  // For SensorPacket structure
 #include "../include/fc/UartManager.h" // For UartManager
@@ -17,6 +18,7 @@
 extern void startTelemetry(uint8_t hz);
 extern void adjustTelemRate();
 extern UartManager uartManager; // Forward declaration of UartManager instance from FC.cpp
+extern class CmdParser cmdParser; // Forward declaration of CmdParser instance from FC.cpp
 
 // Pin definitions
 const int BUZZER_PIN = PA0;  // Changed from PB13 to PA0 for passive buzzer
@@ -51,8 +53,8 @@ StateManager::StateManager() :
     armedTimestamp(0), 
     lastMotionTimestamp(0),
     inMotion(false),
-    lastManualOverrideState(false),
-    lastManualOverrideCheck(0),
+    // lastManualOverrideState(false),     // DEPRECATED: replaced by IdleLogic
+    // lastManualOverrideCheck(0),         // DEPRECATED: replaced by IdleLogic
     buzzerStartTime(0),
     buzzerDuration(0),
     buzzerActive(false),
@@ -67,13 +69,15 @@ StateManager::StateManager() :
     previousAltitude(0),
     previousTimestamp(0),
     velocityTestTriggered(false),
-    currentVelocity(0) {  // Initialize current velocity
-    // Initialize buzzer pin
+    currentVelocity(0) {  // Initialize current velocity    // Initialize buzzer pin
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, LOW);
     
     // Initialize manual override pin
     pinMode(MANUAL_OVERRIDE_PIN, INPUT);  // A1 is 0 by default, button makes it 1
+    
+    // Initialize IdleLogic
+    IdleLogic::init();
 }
 
 SystemState StateManager::getCurrentState() const {
@@ -652,8 +656,10 @@ bool StateManager::isCommandAllowed(CommandType cmd) const {
 }
 
 void StateManager::updateState() {
-    // Check for manual override (IDLE to ARMED via button press on A1)
-    checkManualOverride();
+    // Run IDLE state background logic
+    if (currentState == STATE_IDLE) {
+        IdleLogic::update(cmdParser);
+    }
     
     // Check for auto-recovery condition when in ARMED state
     if (currentState == STATE_ARMED && shouldAutoRecovery()) {
@@ -745,7 +751,9 @@ bool StateManager::hasVelocityData() const {
     return (previousTimestamp > 0);
 }
 
-// Check for manual override button press (IDLE to ARMED transition)
+// DEPRECATED: Check for manual override button press (IDLE to ARMED transition)
+// This functionality has been replaced by IdleLogic which uses the command parser
+/*
 void StateManager::checkManualOverride() {
     // Only check manual override when in IDLE state
     if (currentState != STATE_IDLE) {
@@ -780,6 +788,7 @@ void StateManager::checkManualOverride() {
     // Update the last state for next comparison
     lastManualOverrideState = currentPinState;
 }
+*/
 
 // Check background velocity test and trigger servo sequence if velocity threshold conditions are met
 void StateManager::checkBackgroundVelocityTest() {
