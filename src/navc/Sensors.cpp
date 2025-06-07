@@ -1,5 +1,6 @@
 #include "../include/navc/Sensors.h"
 #include "../include/utils/FrameCodec.h"
+#include <math.h>
 
 // Define dedicated hardware Serial for GPS with fixed pins
 // The pins must be specified in the constructor, not later with setRx/setTx
@@ -36,9 +37,17 @@ SensorManager::SensorManager() :
     memset(&currentPacket, 0, sizeof(currentPacket));
     
     temperature = 0.0f;
-    pressure = 0.0f;
-    altitude = 0.0f;
+    pressure = 0.0f;    altitude = 0.0f;
     tirePressurePSI = 0.0f;
+    
+    // Initialize altitude calculation variables
+    baselinePressure = 0.0f;
+    altitudeInitialized = false;
+    altitudeBufferIndex = 0;
+    altitudeBufferFull = false;
+    for (int i = 0; i < 10; i++) {
+        altitudeBuffer[i] = 0.0f;
+    }
 }
 
 SensorManager::~SensorManager() {
@@ -461,52 +470,82 @@ void SensorManager::readBarometer() {
     // Read all values once and check validity
     float tempReading = baro.readTemperature();
     float pressureReading = baro.readPressure();
-    float currentAltitude = baro.readAltitude(1013.25); // Standard pressure at sea level
     
-    if (!isnan(tempReading) && !isnan(pressureReading) && !isnan(currentAltitude)) {
+    if (!isnan(tempReading) && !isnan(pressureReading)) {
         // Store valid readings
         temperature = tempReading;
         pressure = pressureReading;
         
-        // Check if this is the first valid reading to set the reference point
-        static bool referenceAltitudeSet = false;
-        static float referenceAltitude = 0.0f;
-        static int readingCount = 0;
+        // Apply heavy filtering to pressure for stable baseline
+        float filteredPressure = pressureFilter.update(pressureReading);
         
-        // Wait for a few readings before setting reference to ensure stability
-        readingCount++;
-        
-        if (!referenceAltitudeSet && readingCount > 10) {
-            referenceAltitude = currentAltitude;
-            referenceAltitudeSet = true;
+        // Initialize baseline pressure from the first stable readings
+        if (!altitudeInitialized) {
+            static int initCount = 0;
+            initCount++;
             
-            #if DEBUG_SENSORS
-            char buffer[64];
-            snprintf(buffer, sizeof(buffer), "<DEBUG:BARO_REF_ALT_SET:%.2fm>", referenceAltitude);
-            Serial.println(buffer);
-            #endif
+            // Wait for 50 readings to ensure pressure filter is stable
+            if (initCount > 50) {
+                baselinePressure = filteredPressure;
+                altitudeInitialized = true;
+                
+                #if DEBUG_SENSORS
+                char buffer[64];
+                snprintf(buffer, sizeof(buffer), "<DEBUG:BARO_BASELINE_SET:%.2fPa>", baselinePressure);
+                Serial.println(buffer);
+                #endif
+            } else {
+                // During initialization, set altitude to zero
+                altitude = 0.0f;
+                return;
+            }
         }
-          if (referenceAltitudeSet) {
-            // Calculate relative altitude and apply low-pass filtering for stability
-            float relativeAltitude = currentAltitude - referenceAltitude;
-            altitude = altitudeFilter.update(relativeAltitude);
+        
+        // Calculate pressure-based relative altitude using hypsometric formula
+        // h = (T₀/L) * [1 - (P/P₀)^(RL/g)]
+        // Simplified for small altitude changes: h ≈ 44330 * [1 - (P/P₀)^0.1903]
+        float pressureRatio = pressureReading / baselinePressure;
+        float rawAltitude = 44330.0f * (1.0f - powf(pressureRatio, 0.1903f));
+        
+        // Apply primary low-pass filter
+        float filteredAltitude = altitudeFilter.update(rawAltitude);
+        
+        // Apply additional moving average smoothing
+        altitudeBuffer[altitudeBufferIndex] = filteredAltitude;
+        altitudeBufferIndex = (altitudeBufferIndex + 1) % 10;
+        
+        if (!altitudeBufferFull && altitudeBufferIndex == 0) {
+            altitudeBufferFull = true;
+        }
+        
+        // Calculate moving average
+        float sum = 0.0f;
+        int count = altitudeBufferFull ? 10 : altitudeBufferIndex;
+        for (int i = 0; i < count; i++) {
+            sum += altitudeBuffer[i];
+        }
+        altitude = sum / count;
+        
+        // Slowly update baseline pressure to compensate for weather changes
+        // Update baseline very slowly (every ~1000 readings when altitude is near zero)
+        static int stableCount = 0;
+        if (abs(altitude) < 0.5f) { // If altitude is within 50cm of baseline
+            stableCount++;
+            if (stableCount > 1000) { // About 20 seconds at 50Hz
+                baselinePressure = baselinePressure * 0.999f + filteredPressure * 0.001f;
+                stableCount = 0;
+            }
         } else {
-            // Before reference is set, use absolute altitude (no filtering during initialization)
-            altitude = currentAltitude;
+            stableCount = 0;
         }
-          #if DEBUG_SENSORS
-        // Debug altitude values periodically (raw vs filtered)
+        
+        #if DEBUG_SENSORS
+        // Debug altitude values periodically
         static unsigned long lastAltDebugTime = 0;
         if (millis() - lastAltDebugTime > 5000) {
             char buffer[128];
-            if (referenceAltitudeSet) {
-                float rawRelative = currentAltitude - referenceAltitude;
-                snprintf(buffer, sizeof(buffer), "<DEBUG:ALTITUDE:raw_rel=%.2f,filtered=%.2f,ref=%.2f>", 
-                         rawRelative, altitude, referenceAltitude);
-            } else {
-                snprintf(buffer, sizeof(buffer), "<DEBUG:ALTITUDE:current=%.2f,ref=NOT_SET,relative=%.2f>", 
-                         currentAltitude, altitude);
-            }
+            snprintf(buffer, sizeof(buffer), "<DEBUG:ALTITUDE:raw=%.2f,filtered=%.2f,final=%.2f,baseline=%.2fPa>", 
+                     rawAltitude, filteredAltitude, altitude, baselinePressure);
             Serial.println(buffer);
             lastAltDebugTime = millis();
         }

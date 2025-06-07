@@ -86,8 +86,7 @@ private:// Hardware drivers
     Adafruit_BMP280 baro;
     RTC_DS3231 rtc;
     TinyGPSPlus gps;
-    Adafruit_NeoPixel statusLed;
-      // Raw sensor data
+    Adafruit_NeoPixel statusLed;    // Raw sensor data
     float accelData[3];  // X, Y, Z in m/s^2
     float gyroData[3];   // X, Y, Z in rad/s
     float magData[3];    // X, Y, Z magnetometer data
@@ -95,6 +94,13 @@ private:// Hardware drivers
     float pressure;      // in Pa
     float altitude;      // in m
     float tirePressurePSI; // Tire pressure in PSI
+    
+    // Altitude calculation variables
+    float baselinePressure;      // Reference pressure for altitude calculation
+    bool altitudeInitialized;    // Flag to track if altitude baseline is set
+    float altitudeBuffer[10];    // Moving average buffer for additional smoothing
+    int altitudeBufferIndex;     // Current index in the buffer
+    bool altitudeBufferFull;     // Flag to track if buffer is full
     
     // Low-pass filters for sensor noise reduction
     LowPassFilter accelFilterX{0.2f}; // α = 0.2
@@ -105,8 +111,8 @@ private:// Hardware drivers
     LowPassFilter gyroFilterZ{0.2f};
     LowPassFilter magFilterX{0.1f}; // α = 0.1 - more smoothing due to EMI noise
     LowPassFilter magFilterY{0.1f};
-    LowPassFilter magFilterZ{0.1f};
-    LowPassFilter altitudeFilter{0.05f}; // α = 0.05 - heavy smoothing for stable altitude
+    LowPassFilter magFilterZ{0.1f};    LowPassFilter altitudeFilter{0.02f}; // α = 0.02 - very heavy smoothing for stable altitude
+    LowPassFilter pressureFilter{0.01f}; // α = 0.01 - extremely heavy smoothing for pressure baseline
     LowPassFilter tirePressureFilter{0.1f}; // α = 0.1 - smooth pressure readings
     
     // RTC data
