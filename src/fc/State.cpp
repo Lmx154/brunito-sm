@@ -1020,45 +1020,48 @@ void StateManager::updateBuzzerSound() {
                     currentBuzzerTone = frequencies[soundSequenceStep];
                 }
                 break;
-                
-            case STATE_ARMED:
-                // ARMED: Maximum volume ascending pattern
-                if (soundSequenceStep < 4) {
-                    // Frequencies in the high-efficiency range (2.4-3.0 kHz)
-                    int frequencies[] = {2400, 2600, 2800, 3000};
-                    int durations[] = {200, 200, 250, 350}; // Longer durations for more volume
-                    
-                    toneMaxVolume(BUZZER_PIN, frequencies[soundSequenceStep]); // Max volume
-                    buzzerActive = true;
-                    buzzerStartTime = currentTime;
-                    buzzerDuration = durations[soundSequenceStep];
-                    currentBuzzerTone = frequencies[soundSequenceStep];
-                }
-                break;
-                  case STATE_RECOVERY:                
-                // RECOVERY: Continuous loud buzzing every 3 seconds
-                // Simplified to just continuous loud beeps for maximum audibility
+                  case STATE_ARMED:
+                // ARMED: 3 long beeps at IDLE frequency (2800 Hz)
                 if (soundSequenceStep < 3) {
-                    // Three loud beeps every 3 seconds
-                    int baseFreq = 3000; // Maximum volume frequency for most passive buzzers
-                    int duration = 200; // Short, loud beeps
+                    // Use same frequency as IDLE (2800 Hz) for 3 long beeps
+                    int frequency = TONE_IDLE; // 2800 Hz - same as IDLE
+                    int duration = 400; // Long beep duration
                     
-                    toneMaxVolume(BUZZER_PIN, baseFreq); // Max volume
+                    toneMaxVolume(BUZZER_PIN, frequency); // Max volume
                     buzzerActive = true;
                     buzzerStartTime = currentTime;
                     buzzerDuration = duration;
-                    currentBuzzerTone = baseFreq;
+                    currentBuzzerTone = frequency;
+                }
+                break;                case STATE_RECOVERY:                
+                // RECOVERY: SOS pattern using IDLE frequency (2800 Hz) for maximum loudness
+                // SOS = · · · — — — · · · (3 short, 3 long, 3 short)
+                if (soundSequenceStep < 9) {
+                    int frequency = TONE_IDLE; // Use IDLE frequency (2800 Hz) - loudest measured
+                    int duration;
+                    
+                    // SOS pattern: short-short-short-long-long-long-short-short-short
+                    if (soundSequenceStep < 3 || soundSequenceStep >= 6) {
+                        duration = 150; // Short beeps (dots)
+                    } else {
+                        duration = 400; // Long beeps (dashes)
+                    }
+                    
+                    toneMaxVolume(BUZZER_PIN, frequency);
+                    buzzerActive = true;
+                    buzzerStartTime = currentTime;
+                    buzzerDuration = duration;
+                    currentBuzzerTone = frequency;
                 } else {
-                    // After 3 beeps, wait 3 seconds before repeating
-                    // Check if 3 seconds have passed since the last beep ended
-                    if (currentTime - buzzerStartTime >= 3000) {
-                        soundSequenceStep = 0; // Reset sequence to repeat
+                    // After SOS sequence, wait 2 seconds before repeating
+                    if (currentTime - buzzerStartTime >= 2000) {
+                        soundSequenceStep = 0; // Reset sequence to repeat SOS
                         // Immediate restart - no delay
-                        toneMaxVolume(BUZZER_PIN, 3000);
+                        toneMaxVolume(BUZZER_PIN, TONE_IDLE);
                         buzzerActive = true;
                         buzzerStartTime = currentTime;
-                        buzzerDuration = 200;
-                        currentBuzzerTone = 3000;
+                        buzzerDuration = 150; // Start with first short beep
+                        currentBuzzerTone = TONE_IDLE;
                     }
                 }
                 break;
