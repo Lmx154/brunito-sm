@@ -343,12 +343,11 @@ void LoraManager::checkQueue() {
             // Encode packet
             uint8_t buffer[LORA_MAX_PACKET_SIZE];
             size_t size;
-            
-            if (encodePacket(&outQueue[i], buffer, &size)) {
+              if (encodePacket(&outQueue[i], buffer, &size)) {
                 // Cancel receive mode and send packet
                 radio.standby();
                 
-                Serial.println("LoRa TX: Sending settings packet with highest priority");
+                // Removed LoRa TX debug message to reduce verbosity
                 
                 // In RadioLib 7.1.2, transmit takes an array and length
                 int state = radio.transmit(buffer, size);
@@ -363,11 +362,11 @@ void LoraManager::checkQueue() {
                     // Fire-and-forget approach - mark as inactive immediately
                     queueActive[i] = false;
                     
-                    Serial.println("LoRa TX: Settings packet sent successfully");
+                    // Removed LoRa TX debug message to reduce verbosity
                 } else {
                     // On error, also mark as inactive to avoid retransmission
                     queueActive[i] = false;
-                    Serial.println("LoRa TX: Settings packet failed, aborting to avoid loops");
+                    // Removed LoRa TX debug message to reduce verbosity
                 }
                 
                 // Restart receiver and return immediately
@@ -391,15 +390,10 @@ void LoraManager::checkQueue() {
                 
                 // In RadioLib 7.1.2, transmit takes an array and length
                 int state = radio.transmit(buffer, size);
-                
-                // Update statistics
+                  // Update statistics
                 packetsSent++;
                 
-                // Log transmission (but more concise for telemetry to reduce overhead)
-                char logBuffer[64];
-                snprintf(logBuffer, sizeof(logBuffer), "LoRa TX: type=%d, id=%d, retry=%d", 
-                        outQueue[i].type, outQueue[i].id, queueRetries[i]);
-                Serial.println(logBuffer);
+                // Removed LoRa TX debug logging to reduce verbosity
                 
                 if (state == RADIOLIB_ERR_NONE) {
                     // Track bytes and free queue slot immediately (fire-and-forget)
@@ -446,14 +440,7 @@ void LoraManager::checkQueue() {
                 if (outQueue[i].type != LORA_TYPE_ACK) { // Don't count ACKs in the statistics
                     packetsSent++;
                 }
-                
-                // Log transmission attempt (but skip detailed logging for ping/pong packets)
-                if (outQueue[i].type != LORA_TYPE_PING && outQueue[i].type != LORA_TYPE_PONG) {
-                    char logBuffer[64];
-                    snprintf(logBuffer, sizeof(logBuffer), "LoRa TX: type=%d, id=%d, retry=%d", 
-                            outQueue[i].type, outQueue[i].id, queueRetries[i]);
-                    Serial.println(logBuffer);
-                }
+                  // Removed LoRa TX debug logging to reduce verbosity
                 
                 // Handle transmission result
                 if (state == RADIOLIB_ERR_NONE) {
@@ -500,32 +487,21 @@ void LoraManager::checkQueue() {
                                     ackTimeout += (pendingCount * 100); // Add 100ms per pending packet
                                 }
                                 #endif
-                                
-                                // Set a timeout for final ACK wait
+                                  // Set a timeout for final ACK wait
                                 queueRetryTime[i] = now + ackTimeout;
-                                
-                                // Log that we're waiting for an ACK
-                                char buffer[64];
-                                snprintf(buffer, sizeof(buffer), "LoRa TX: Max retries reached, waiting for ACK (timeout: %lu ms", 
-                                         ackTimeout);
-                                Serial.println(buffer);
                                 
                                 queueRetries[i]++; // Increment to indicate we're in the grace period
                             } else {
                                 // For critical commands, try more times even after timeout
-                                if (isCriticalCmd && queueRetries[i] < (maxRetries + 5)) {
-                                    // Keep trying with exponential backoff
+                                if (isCriticalCmd && queueRetries[i] < (maxRetries + 5)) {                                    // Keep trying with exponential backoff
                                     uint32_t backoffMs = random(500, 1000) * (queueRetries[i] - maxRetries + 1);
                                     queueRetryTime[i] = now + backoffMs;
                                     queueRetries[i]++;
                                     
-                                    char buffer[64];
-                                    snprintf(buffer, sizeof(buffer), "LoRa TX: Critical command retry %d with backoff %lu ms", 
-                                             queueRetries[i], backoffMs);
-                                    Serial.println(buffer);
+                                    // Removed LoRa TX debug message to reduce verbosity
                                 } else {
                                     // Grace period expired, give up and remove from queue
-                                    Serial.println("LoRa TX: No ACK received, dropping packet");
+                                    // Removed LoRa TX debug message to reduce verbosity
                                     queueActive[i] = false;
                                     packetsLost++;
                                 }
@@ -556,11 +532,9 @@ void LoraManager::checkQueue() {
                 } else {
                     // Transmission failed, retry immediately on next check
                     queueRetryTime[i] = now;
-                    
-                    // Only log failures for packets other than ping/pong to reduce noise
+                      // Only log failures for packets other than ping/pong to reduce noise
                     if (outQueue[i].type != LORA_TYPE_PING && outQueue[i].type != LORA_TYPE_PONG) {
-                        Serial.print("LoRa TX failed: ");
-                        Serial.println(state);
+                        // Removed LoRa TX failure debug message to reduce verbosity
                     }
                 }
                 
@@ -592,19 +566,12 @@ void LoraManager::checkQueue() {
                 
                 // In RadioLib 7.1.2, transmit takes an array and length
                 int state = radio.transmit(buffer, size);
-                
-                // Update statistics
+                  // Update statistics
                 if (outQueue[i].type != LORA_TYPE_ACK) { // Don't count ACKs in the statistics
                     packetsSent++;
                 }
                 
-                // Log transmission attempt (but skip detailed logging for ping/pong packets)
-                if (outQueue[i].type != LORA_TYPE_PING && outQueue[i].type != LORA_TYPE_PONG) {
-                    char logBuffer[64];
-                    snprintf(logBuffer, sizeof(logBuffer), "LoRa TX: type=%d, id=%d, retry=%d", 
-                            outQueue[i].type, outQueue[i].id, queueRetries[i]);
-                    Serial.println(logBuffer);
-                }
+                // Removed LoRa TX debug logging to reduce verbosity
                 
                 // Process result similar to command packets
                 if (state == RADIOLIB_ERR_NONE) {
@@ -705,14 +672,7 @@ void LoraManager::processIncomingPacket(LoraPacket* packet) {
     if (packet->dest != address && packet->dest != 0xFF) {
         return;
     }
-      
-    // Log packet info (but skip ping/pong packets to reduce log noise)
-    if (packet->type != LORA_TYPE_PING && packet->type != LORA_TYPE_PONG) {
-        char logBuffer[64];
-        snprintf(logBuffer, sizeof(logBuffer), "LoRa RX: type=%d, id=%d, source=0x%02X", 
-                packet->type, packet->id, packet->source);
-        Serial.println(logBuffer);
-    }
+        // Removed LoRa RX debug messages to reduce log verbosity
     
     // Update last received time if packet came from our target
     if (packet->source == targetAddress) {
@@ -740,9 +700,8 @@ void LoraManager::processIncomingPacket(LoraPacket* packet) {
             
             // First try for exact ID match
             for (int i = 0; i < QUEUE_SIZE; i++) {
-                if (queueActive[i] && outQueue[i].id == packet->id) {
-                    queueActive[i] = false;
-                    Serial.println("LoRa ACK received, packet removed from queue");
+                if (queueActive[i] && outQueue[i].id == packet->id) {                    queueActive[i] = false;
+                    // Removed LoRa ACK debug message to reduce verbosity
                     foundMatch = true;
                     break;
                 }
@@ -774,17 +733,15 @@ void LoraManager::processIncomingPacket(LoraPacket* packet) {
                 // This helps break the infinite loop by acknowledging settings even with mismatched IDs
                 bool foundSettingsPacket = false;
                 for (int i = 0; i < QUEUE_SIZE; i++) {
-                    if (queueActive[i] && outQueue[i].type == LORA_TYPE_SETTINGS) {
-                        // Found a settings packet waiting for ACK - consider it acknowledged
+                    if (queueActive[i] && outQueue[i].type == LORA_TYPE_SETTINGS) {                        // Found a settings packet waiting for ACK - consider it acknowledged
                         queueActive[i] = false;
-                        Serial.println("LoRa RX: ACK matched to settings packet");
+                        // Removed LoRa RX debug message to reduce log verbosity
                         foundMatch = true;
                         foundSettingsPacket = true;
                     }
                 }
-                
-                if (!foundSettingsPacket && !foundMatch) {
-                    Serial.println("LoRa RX: ACK for unknown packet ID");
+                  if (!foundSettingsPacket && !foundMatch) {
+                    // Removed LoRa RX debug message to reduce log verbosity
                 }
             }
             break;
@@ -828,8 +785,7 @@ void LoraManager::processIncomingPacket(LoraPacket* packet) {
                 
                 // Apply the settings
                 setSettings(settings);
-                
-                Serial.println("LoRa settings updated from remote");
+                  // Removed LoRa settings update debug message to reduce verbosity
                 
                 // CRITICAL FIX: Always ACK settings packets multiple ways for robustness
                 
@@ -915,23 +871,14 @@ void LoraManager::sendAckImmediate(uint16_t packetId) {
     // Encode the packet
     uint8_t buffer[LORA_MAX_PACKET_SIZE];
     size_t size;
-    
-    if (encodePacket(&ackPacket, buffer, &size)) {
-        // Log the immediate ACK
-        Serial.println("LoRa TX: Sending immediate ACK");
-        
+      if (encodePacket(&ackPacket, buffer, &size)) {
         // Cancel receive mode and send ACK packet directly
         radio.standby();
         
         // In RadioLib 7.1.2, transmit takes an array and length
         int state = radio.transmit(buffer, size);
         
-        if (state == RADIOLIB_ERR_NONE) {
-            Serial.println("LoRa TX: Immediate ACK sent successfully");
-        } else {
-            Serial.print("LoRa TX: Failed to send immediate ACK, error code ");
-            Serial.println(state);
-            
+        if (state != RADIOLIB_ERR_NONE) {
             // Add to regular queue as a fallback
             sendAck(packetId);
         }
