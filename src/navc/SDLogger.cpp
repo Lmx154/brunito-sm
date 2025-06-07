@@ -287,7 +287,7 @@ bool SDLogger::openLogFile() {
                 now.month(), now.day(), now.year(),
                 now.hour(), now.minute(), now.second());
         log_file.println(timestamp);
-        log_file.println("# Format: MM/DD/YYYY,HH:MM:SS,altitude,accelX,accelY,accelZ,gyroX,gyroY,gyroZ,magX,magY,magZ,lat,lon,sats,temp");
+        log_file.println("# Format: MM/DD/YYYY,HH:MM:SS,altitude,accelX,accelY,accelZ,gyroX,gyroY,gyroZ,magX,magY,magZ,lat,lon,sats,temp,tirePressure");
         
         log_file.flush();
         
@@ -475,9 +475,8 @@ void SDLogger::formatSensorPacketCSV(const SensorPacket& packet, char* buffer, s
         snprintf(altStr, sizeof(altStr), "%ld.%02ld", (long)altitudeWhole, (long)altitudeFrac);
     }
   
-    
-    snprintf(buffer, bufferSize, 
-             "%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%d,%d",
+      snprintf(buffer, bufferSize, 
+             "%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%d,%d,%d",
              timestamp,
              altStr,  // Use the manually formatted altitude string
              packet.accelX, packet.accelY, packet.accelZ,
@@ -485,7 +484,8 @@ void SDLogger::formatSensorPacketCSV(const SensorPacket& packet, char* buffer, s
              packet.magX, packet.magY, packet.magZ,
              packet.latitude, packet.longitude,
              packet.satellites,
-             packet.temperature);
+             packet.temperature,
+             packet.tirePressure);
 }
 
 void SDLogger::updateBuzzer() {

@@ -13,6 +13,9 @@
 // Set to 0 to disable sensor debug output, 1 to enable
 #define DEBUG_SENSORS 0  // Disabled for production use
 
+// Tire pressure sensor pin definition
+#define PRESSURE_SENSOR_PIN PB0  // PB0 (ADC) - tire pressure sensor
+
 // Sensor reading and fusion rates
 #define SENSOR_SAMPLE_RATE_HZ 100
 #define SENSOR_FUSION_RATE_HZ 100
@@ -31,8 +34,7 @@ typedef struct {
     int16_t gyroZ;
     int16_t magX;        // Magnetic field in 0.1 µT
     int16_t magY;
-    int16_t magZ;
-    int32_t latitude;    // Latitude in 1e-7 degrees
+    int16_t magZ;    int32_t latitude;    // Latitude in 1e-7 degrees
     int32_t longitude;   // Longitude in 1e-7 degrees
     uint8_t year;        // Last two digits of year (e.g., 25 for 2025)
     uint8_t month;       // Month (1-12)
@@ -42,6 +44,7 @@ typedef struct {
     uint8_t second;      // Second (0-59)
     uint8_t satellites;  // Number of GPS satellites
     int16_t temperature; // Temperature in °C (whole degrees, rounded)
+    uint16_t tirePressure; // Tire pressure in PSI (whole pounds per square inch)
     uint16_t crc16;      // CRC-16 checksum
 } __attribute__((packed)) SensorPacket;
 
@@ -91,6 +94,7 @@ private:// Hardware drivers
     float temperature;   // in °C
     float pressure;      // in Pa
     float altitude;      // in m
+    float tirePressurePSI; // Tire pressure in PSI
     
     // Low-pass filters for sensor noise reduction
     LowPassFilter accelFilterX{0.2f}; // α = 0.2
@@ -103,6 +107,7 @@ private:// Hardware drivers
     LowPassFilter magFilterY{0.1f};
     LowPassFilter magFilterZ{0.1f};
     LowPassFilter altitudeFilter{0.05f}; // α = 0.05 - heavy smoothing for stable altitude
+    LowPassFilter tirePressureFilter{0.1f}; // α = 0.1 - smooth pressure readings
     
     // RTC data
     uint8_t rtcYear;     // Last two digits of year
@@ -125,6 +130,7 @@ private:// Hardware drivers
     void readAccelGyro();
     void readMagnetometer();
     void readBarometer();
+    void readPressureSensor();
     void updateTime();
     void processSensorData();
     

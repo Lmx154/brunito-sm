@@ -38,6 +38,7 @@ SensorManager::SensorManager() :
     temperature = 0.0f;
     pressure = 0.0f;
     altitude = 0.0f;
+    tirePressurePSI = 0.0f;
 }
 
 SensorManager::~SensorManager() {
@@ -68,6 +69,10 @@ bool SensorManager::begin() {    // Initialize I2C bus with explicit pin configu
         SerialGPS.read();
     }
       delay(100); // Brief stabilization delay
+    
+    // Initialize pressure sensor ADC
+    analogReadResolution(12); // Set ADC to 12-bit resolution
+    pinMode(PRESSURE_SENSOR_PIN, INPUT);
     
     // Initialize RGB LED
     statusLed.begin();
@@ -182,6 +187,7 @@ void SensorManager::update() {
         readAccelGyro();
         readMagnetometer();
         readBarometer();
+        readPressureSensor();
         updateTime();
     }
     
@@ -301,6 +307,7 @@ bool SensorManager::updateWithDiagnostics() {
         
         // Read barometer and update time
         readBarometer();
+        readPressureSensor();
         updateTime();
     }
     
@@ -511,6 +518,44 @@ void SensorManager::readBarometer() {
     }
 }
 
+void SensorManager::readPressureSensor() {
+    // Tire pressure sensor specifications (typical automotive pressure sensor)
+    const float MIN_VOLTAGE = 0.5f;       // Minimum sensor voltage (0 PSI)
+    const float MAX_VOLTAGE = 4.5f;       // Maximum sensor voltage (150 PSI)
+    const float MAX_PRESSURE = 150.0f;    // Maximum pressure in PSI
+    const float ADC_MAX_VALUE = 4095.0f;  // 12-bit ADC maximum value
+    const float REFERENCE_VOLTAGE = 3.3f; // STM32F401 reference voltage
+    
+    // Read analog value from pressure sensor
+    int rawValue = analogRead(PRESSURE_SENSOR_PIN);
+    
+    // Convert to voltage
+    float voltage = (rawValue / ADC_MAX_VALUE) * REFERENCE_VOLTAGE;
+    
+    // Clamp voltage to valid range to handle sensor errors
+    if (voltage < MIN_VOLTAGE) voltage = MIN_VOLTAGE;
+    if (voltage > MAX_VOLTAGE) voltage = MAX_VOLTAGE;
+    
+    // Linear conversion from voltage to pressure
+    // Pressure = (voltage - min_voltage) / (max_voltage - min_voltage) * max_pressure
+    float pressurePSI = ((voltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE)) * MAX_PRESSURE;
+    
+    // Apply low-pass filtering to reduce noise
+    tirePressurePSI = tirePressureFilter.update(pressurePSI);
+    
+    #if DEBUG_SENSORS
+    // Debug output to compare raw vs filtered values (only every 100 samples to reduce spam)
+    static int debugPressureCounter = 0;
+    if (++debugPressureCounter >= 100) {
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "<DEBUG:PRESSURE_RAW_ADC:%d,VOLTAGE:%.3f,RAW_PSI:%.2f,FILTERED:%.2f>",
+                rawValue, voltage, pressurePSI, tirePressurePSI);
+        Serial.println(buffer);
+        debugPressureCounter = 0;
+    }
+    #endif
+}
+
 void SensorManager::updateTime() {
     // Get current time from RTC
     DateTime now = rtc.now();
@@ -545,10 +590,13 @@ void SensorManager::processSensorData() {
     // (actual date/time formatting will be done in FC when sending)
     currentPacket.timestamp = millis();
     
-    // Scale and convert all values to integers with appropriate scaling
-      // Temperature rounded to nearest whole degree (not centi-degrees anymore)
+    // Scale and convert all values to integers with appropriate scaling    // Temperature rounded to nearest whole degree (not centi-degrees anymore)
     currentPacket.temperature = static_cast<int16_t>(round(temperature));
-      // Altitude in cm (meters * 100) - stored in cm but will be displayed as m with 2 decimal places
+    
+    // Tire pressure rounded to nearest whole PSI
+    currentPacket.tirePressure = static_cast<uint16_t>(round(tirePressurePSI));
+    
+    // Altitude in cm (meters * 100) - stored in cm but will be displayed as m with 2 decimal places
   
     
     currentPacket.altitude = static_cast<int32_t>(altitude * 100.0f);

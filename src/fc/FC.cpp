@@ -92,21 +92,21 @@ String formatTelem(const SensorPacket& packet, bool gpsOnly) {
   snprintf(datetime, sizeof(datetime), "%02u/%02u/20%02u,%02u:%02u:%02u", 
            packet.month, packet.day, packet.year, 
            packet.hour, packet.minute, packet.second);
-           
-  if (gpsOnly) {
+             if (gpsOnly) {
     // RECOVERY mode - GPS only telemetry with formatted date/time, satellite count, and temperature
-    snprintf(buffer, sizeof(buffer), "<%s,%ld,%ld,%s,%u,%d>", // No T: prefix as requested by user
+    snprintf(buffer, sizeof(buffer), "<%s,%ld,%ld,%s,%u,%d,%u>", // No T: prefix as requested by user
              datetime,
              packet.latitude, 
              packet.longitude, 
              altStr, // Using formatted altitude with decimal places
              packet.satellites,
-             packet.temperature);
+             packet.temperature,
+             packet.tirePressure);
   } else {
     // ARMED mode - More compact format with no tag prefix as requested by user
-    // Removed packetId and T: prefix as requested by user 
+    // Removed packetId and T: prefix as requested by user
     snprintf(buffer, sizeof(buffer), 
-             "<%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%d>",
+             "<%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%d,%u>",
              datetime,
              altStr, // Using formatted altitude with decimal places
              packet.accelX, packet.accelY, packet.accelZ,
@@ -114,7 +114,8 @@ String formatTelem(const SensorPacket& packet, bool gpsOnly) {
              packet.magX, packet.magY, packet.magZ,
              packet.latitude, packet.longitude,
              packet.satellites,
-             packet.temperature);
+             packet.temperature,
+             packet.tirePressure);
   }
   
   return String(buffer);
