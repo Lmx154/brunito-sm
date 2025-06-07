@@ -43,14 +43,9 @@ uint8_t telemRate = 10; // Default fixed to 10 Hz for optimal command reception
 unsigned long lastTelemTime = 0;
 unsigned long telemPeriodMs = 100; // 100ms = 10Hz
 
-// Velocity packet timing variables (10Hz when velocity test is active)
-unsigned long lastVelocityPacketTime = 0;
-static const uint32_t VELOCITY_PACKET_PERIOD_MS = 100; // 100ms = 10Hz
-
 // Forward declarations
 void reportLoraLinkStatus();
 String formatTelem(const SensorPacket& packet, bool gpsOnly);
-String formatVelocityPacket(const SensorPacket& packet, int32_t velocity, int32_t threshold);
 void startTelemetry(uint8_t hz = 10);
 void adjustTelemRate();
 void reinitializeUart();
@@ -713,31 +708,7 @@ void uartTask() {
             
             // Send telemetry to debug port and LoRa for testing
             Serial.println(telemStr);
-            loraManager.sendPacket(LORA_TYPE_TELEM, telemStr.c_str(), telemStr.length());
-          }
-            // Send velocity packets at 10Hz when velocity test is active
-          if (stateManager.isVelocityTestEnabled() && stateManager.hasVelocityData()) {
-            if (now - lastVelocityPacketTime >= VELOCITY_PACKET_PERIOD_MS) {
-              lastVelocityPacketTime = now;
-              
-              // Debug: Show current velocity test state
-              char debugBuffer[128];
-              snprintf(debugBuffer, sizeof(debugBuffer), 
-                       "<DEBUG:VEL_PACKET:enabled=%d,hasData=%d,vel=%.2f,thresh=%.1f>",
-                       stateManager.isVelocityTestEnabled(), stateManager.hasVelocityData(),
-                       stateManager.getCurrentVelocity(), stateManager.getVelocityTestThreshold());
-              Serial.println(debugBuffer);
-              
-              // Format velocity packet
-              String velocityStr = formatVelocityPacket(packet, 
-                                                       stateManager.getCurrentVelocity(),
-                                                       stateManager.getVelocityTestThreshold());
-              
-              // Send velocity packet to debug port and LoRa
-              Serial.println(velocityStr);
-              loraManager.sendPacket(LORA_TYPE_TELEM, velocityStr.c_str(), velocityStr.length());
-            }
-          }
+            loraManager.sendPacket(LORA_TYPE_TELEM, telemStr.c_str(), telemStr.length());          }
         }
         
         // Also report sensor values for testing (every packet)
@@ -1102,21 +1073,4 @@ void reinitializeUart() {
   }
 }
 
-/**
- * Formats velocity data packet for velocity test monitoring
- * 
- * @param packet The binary sensor packet
- * @param velocity The calculated velocity in cm/s
- * @param threshold The velocity threshold in cm/s
- * @return Formatted velocity packet string
- */
-String formatVelocityPacket(const SensorPacket& packet, int32_t velocity, int32_t threshold) {
-  char buffer[128];
-  
-  // Format as: <VEL:altitude_cm,velocity_cm_s,threshold_cm_s,timestamp>
-  // Using integer values to avoid float precision issues
-  snprintf(buffer, sizeof(buffer), "<VEL:%ld,%ld,%ld,%lu>",
-           packet.altitude, velocity, threshold, packet.timestamp);
-  
-  return String(buffer);
-}
+

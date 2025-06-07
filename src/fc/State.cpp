@@ -223,8 +223,7 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
                 FrameCodec::formatDebug(buffer, sizeof(buffer), "TEST_DEVICE_REQUESTED");                Serial.println(buffer);
                 return true;
             }
-            break;
-              case CMD_TEST_SERVO:
+            break;        case CMD_TEST_SERVO:
             // This command tests the servo movement on pin PB14
             if (isCommandAllowed(cmd)) {
                 // Create a servo object and attach it to the pin
@@ -232,12 +231,12 @@ bool StateManager::processCommand(CommandType cmd, const char* cmdBuffer) {
                 testServo.attach(SERVO_PIN);
                 
                 // Move to 90 degrees
-                testServo.write(90);
-                delay(500); // Wait for servo to reach position
+                testServo.write(70);
+                delay(5000); // Wait for servo to reach position
                 
                 // Move back to 0 degrees
                 testServo.write(0);
-                delay(500); // Wait for servo to reach position
+                delay(1000); // Wait for servo to reach position
                 
                 // Detach servo to prevent jitter
                 testServo.detach();
@@ -818,10 +817,9 @@ void StateManager::checkBackgroundVelocityTest() {
     // Check velocity test conditions (must be positive velocity while going up)
     bool velocityAtThreshold = (currentVelocity > 0 && currentVelocity <= velocityTestThreshold);
     bool altitudeMinimumMet = (currentAltitudeCm >= velocityTestMinAltitude);
-    bool velocityPositive = (currentVelocity > 0);
-      // Debug output every 2 seconds
+    bool velocityPositive = (currentVelocity > 0);      // Debug output every 1 second (1Hz)
     static unsigned long lastDebugTime = 0;
-    if (millis() - lastDebugTime > 2000) {
+    if (millis() - lastDebugTime > 1000) {
         char debugBuffer[128];
         snprintf(debugBuffer, sizeof(debugBuffer), 
                 "<DEBUG:VELOCITY_TEST:ALT=%ldcm,VEL=%ldcm/s,THRESH=%ldcm/s,MIN_ALT=%ldcm>",
