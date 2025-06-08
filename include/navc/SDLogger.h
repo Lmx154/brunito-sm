@@ -15,7 +15,7 @@
 #define LED_BLINK_DURATION_MS 50
 #define SD_POLL_INTERVAL_MS 2000  // Normal polling interval (reduced from 5000ms to 2000ms)
 #define SD_POLL_INTERVAL_FAST_MS 500  // Fast polling when changes detected (reduced from 1000ms to 500ms)
-#define SENSOR_STABILIZATION_DELAY_MS 5000  // 5 second delay (reduced from 10s) after sensor init before logging
+#define SENSOR_STABILIZATION_DELAY_MS 2000  // 2 second delay (reduced from 5s) after sensor init before logging
 #define BUZZER_BEEP_DURATION_MS 200  // Duration of buzzer beep when SD card missing
 
 // Packet buffer for SD logging
@@ -65,9 +65,9 @@ private:
     
 public:
     SDLogger(RTC_DS3231& rtc_ref, SensorManager* sm = nullptr);
-    bool begin();
-    void update();
+    bool begin();    void update();
     void setSensorsReady();  // Call this when sensors are fully initialized
+    void resetSensorsReady(); // Call this when sensors are reinitialized 
     bool addPacket(const char* packet_data);
     bool addSensorPacket(const SensorPacket& packet);  // New method for direct sensor packet logging
     bool isLogging() const { return logging_active; }

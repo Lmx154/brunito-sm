@@ -226,13 +226,17 @@ void sensorTask(void *pvParameters) {
       if (sensorsInitialized) {
         // Try to update sensors and verify they're still responding
         bool sensorUpdateSuccessful = sensorManager.updateWithDiagnostics();
-        
-        // If sensor update failed, try to reinitialize
+          // If sensor update failed, try to reinitialize
         if (!sensorUpdateSuccessful) {
           if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             Serial.println("<DEBUG:SENSOR_UPDATE_FAILED>");
             Serial.println("<DEBUG:ATTEMPTING_SENSOR_REINIT>");
             xSemaphoreGive(serialMutex);
+          }
+          
+          // Reset SD logger sensor ready state before reinit
+          if (sdLogger) {
+            sdLogger->resetSensorsReady();
           }
           
           int reinitResult = sensorManager.beginWithDiagnostics();
@@ -307,8 +311,7 @@ void sensorTask(void *pvParameters) {
             Serial.println("<DEBUG:ATTEMPTING_SENSOR_REINIT>");
             xSemaphoreGive(serialMutex);
           }
-          
-          int initResult = sensorManager.beginWithDiagnostics();
+            int initResult = sensorManager.beginWithDiagnostics();
           if (initResult == 0) {
             sensorsInitialized = true;
             if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {

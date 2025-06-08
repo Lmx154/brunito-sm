@@ -71,20 +71,65 @@ void SDLogger::setSensorsReady() {
     }
 }
 
+void SDLogger::resetSensorsReady() {
+    sensors_ready = false;
+    sensor_ready_time_ms = 0;
+    if (logging_active) {
+        closeLogFile();
+    }
+    if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        Serial.println("<DEBUG:SD_LOGGER_SENSORS_RESET>");
+        xSemaphoreGive(serialMutex);
+    }
+}
+
 void SDLogger::update() {
     checkSDCard();
     
     // Check if we should start logging (after sensors are stable)
     if (sensors_ready && sd_card_present && !logging_active) {
-        uint32_t current_time = millis();        if (current_time - sensor_ready_time_ms >= SENSOR_STABILIZATION_DELAY_MS) {
+        uint32_t current_time = millis();
+        uint32_t time_since_ready = current_time - sensor_ready_time_ms;
+        
+        // Add debug output for the waiting period (every 500ms)
+        static uint32_t last_debug_time = 0;
+        if (current_time - last_debug_time >= 500) {
+            last_debug_time = current_time;
+            if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                Serial.print("<DEBUG:SD_WAITING_FOR_STABILIZATION:");
+                Serial.print(time_since_ready);
+                Serial.print("ms/");
+                Serial.print(SENSOR_STABILIZATION_DELAY_MS);
+                Serial.println("ms>");
+                xSemaphoreGive(serialMutex);
+            }
+        }
+        
+        if (time_since_ready >= SENSOR_STABILIZATION_DELAY_MS) {
             // Sensors have been ready and stable for the required time
             if (openLogFile()) {
                 if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
                     Serial.println("<DEBUG:SD_LOGGING_STARTED_AFTER_STABILIZATION>");
                     xSemaphoreGive(serialMutex);
                 }
+            } else {
+                if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    Serial.println("<DEBUG:SD_LOGGING_START_FAILED_RETRYING>");
+                    xSemaphoreGive(serialMutex);
+                }
+                // Reset the timer to retry in another stabilization period
+                sensor_ready_time_ms = current_time;
             }
         }
+    }
+    
+    // Handle case where sensors become not ready (reinit scenario)
+    if (!sensors_ready && logging_active) {
+        if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            Serial.println("<DEBUG:SD_LOGGING_STOPPED_SENSORS_NOT_READY>");
+            xSemaphoreGive(serialMutex);
+        }
+        closeLogFile();
     }
     
     if (logging_active) {
@@ -109,13 +154,17 @@ void SDLogger::checkSDCard() {
         return;
     }
     
-    last_sd_poll_ms = current_time;
-      // Protect all SD card operations with mutex
-    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+    last_sd_poll_ms = current_time;      // Protect all SD card operations with mutex
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(200)) != pdTRUE) {
         // Failed to get mutex, skip this check
-        if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            Serial.println("<DEBUG:SD_MUTEX_TIMEOUT>");
-            xSemaphoreGive(serialMutex);
+        static uint32_t last_mutex_warning = 0;
+        uint32_t current_time = millis();
+        if (current_time - last_mutex_warning >= 5000) { // Warn only every 5 seconds
+            last_mutex_warning = current_time;
+            if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                Serial.println("<DEBUG:SD_MUTEX_TIMEOUT_FREQUENT>");
+                xSemaphoreGive(serialMutex);
+            }
         }
         return;
     }
@@ -317,8 +366,19 @@ bool SDLogger::addPacket(const char* packet_data) {
     uint8_t next_head = (packet_buffer.head + 1) % PACKET_BUFFER_SIZE;
     
     if (next_head == packet_buffer.tail) {
-        // Buffer full
-        return false;
+        // Buffer overflow - drop oldest packet to make room
+        packet_buffer.tail = (packet_buffer.tail + 1) % PACKET_BUFFER_SIZE;
+        packet_buffer.count--;
+        
+        static uint32_t last_overflow_warning = 0;
+        uint32_t current_time = millis();
+        if (current_time - last_overflow_warning >= 5000) { // Warn every 5 seconds
+            last_overflow_warning = current_time;
+            if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                Serial.println("<DEBUG:SD_BUFFER_OVERFLOW_DROPPING_PACKETS>");
+                xSemaphoreGive(serialMutex);
+            }
+        }
     }
     
     // Copy packet data
@@ -348,31 +408,49 @@ void SDLogger::processWrites() {
     if (!logging_active || packet_buffer.count == 0) {
         return;
     }
-      // Protect SD write operations with mutex
-    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(50)) != pdTRUE) {
-        // Failed to get mutex quickly, skip this write cycle
+      // Protect SD write operations with mutex - shorter timeout for writes
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        // Failed to get mutex quickly, skip this write cycle but log occasionally
+        static uint32_t last_write_warning = 0;
+        uint32_t current_time = millis();
+        if (current_time - last_write_warning >= 2000) { // Warn every 2 seconds
+            last_write_warning = current_time;
+            if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                Serial.println("<DEBUG:SD_WRITE_MUTEX_TIMEOUT>");
+                xSemaphoreGive(serialMutex);
+            }
+        }
         return;
     }
     
     // Track write timing
     uint32_t write_start = micros();
-      // Process multiple packets per call for better throughput (up to 20 packets per cycle)
+      // Process multiple packets per call for better throughput (up to 10 packets per cycle)
     int packets_processed = 0;
-    const int max_packets_per_cycle = 20;
+    const int max_packets_per_cycle = 10; // Reduced from 20 for better real-time performance
     
     while (packet_buffer.tail != packet_buffer.head && packets_processed < max_packets_per_cycle) {
         // Get packet from buffer
         char* packet_data = packet_buffer.packets[packet_buffer.tail].data;
         
-        // Write to SD card
+        // Write to SD card with error checking
         if (log_file) {
-            log_file.println(packet_data);
-            packets_logged++;
-            packets_processed++;
-            
-            // Update tail
-            packet_buffer.tail = (packet_buffer.tail + 1) % PACKET_BUFFER_SIZE;
-            packet_buffer.count--;
+            size_t bytes_written = log_file.println(packet_data);
+            if (bytes_written > 0) {
+                packets_logged++;
+                packets_processed++;
+                
+                // Update tail
+                packet_buffer.tail = (packet_buffer.tail + 1) % PACKET_BUFFER_SIZE;
+                packet_buffer.count--;
+            } else {
+                // Write failed - log error and break
+                if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    Serial.println("<DEBUG:SD_WRITE_FAILED>");
+                    xSemaphoreGive(serialMutex);
+                }
+                break;
+            }
         } else {
             break; // No log file, exit loop
         }
@@ -433,15 +511,50 @@ void SDLogger::updateStatusLED() {
                     }
                 } else {
                     sensor_manager->setStatusLED(0, 0, 0);   // Off
-                }
-            } else if (!logging_active) {
-                // SD card present but not logging - slow blue pulse
+                }            } else if (!logging_active) {
+                // SD card present but not logging - show different patterns based on reason
                 static bool blue_state = false;
+                static uint8_t blink_counter = 0;
                 blue_state = !blue_state;
-                if (blue_state) {
-                    sensor_manager->setStatusLED(0, 0, 20);  // Dim blue
+                blink_counter++;
+                
+                if (sensors_ready) {
+                    // Sensors are ready, waiting for stabilization - fast blue blink
+                    uint32_t time_since_ready = current_time - sensor_ready_time_ms;
+                    if (time_since_ready < SENSOR_STABILIZATION_DELAY_MS) {
+                        // Fast blink during stabilization wait
+                        if (blue_state) {
+                            sensor_manager->setStatusLED(0, 0, 30);  // Brighter blue
+                        } else {
+                            sensor_manager->setStatusLED(0, 0, 0);   // Off
+                        }
+                        
+                        // Debug message every 8 blinks (about every 4 seconds)
+                        if (blink_counter % 8 == 0) {
+                            if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                                Serial.print("<DEBUG:SD_BLUE_LED_STABILIZING:");
+                                Serial.print(time_since_ready);
+                                Serial.print("ms/");
+                                Serial.print(SENSOR_STABILIZATION_DELAY_MS);
+                                Serial.println("ms>");
+                                xSemaphoreGive(serialMutex);
+                            }
+                        }
+                    } else {
+                        // Should be logging but isn't - very slow dim blue
+                        if ((blink_counter % 4) == 0) { // Very slow blink
+                            sensor_manager->setStatusLED(0, 0, 10);  // Very dim blue
+                        } else {
+                            sensor_manager->setStatusLED(0, 0, 0);   // Off
+                        }
+                    }
                 } else {
-                    sensor_manager->setStatusLED(0, 0, 0);   // Off
+                    // Sensors not ready - slow blue pulse 
+                    if (blue_state) {
+                        sensor_manager->setStatusLED(0, 0, 20);  // Dim blue
+                    } else {
+                        sensor_manager->setStatusLED(0, 0, 0);   // Off
+                    }
                 }
             } else {
                 // Actively logging - solid green
