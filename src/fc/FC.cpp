@@ -6,6 +6,7 @@
  */
 
 #include <Arduino.h>
+#include <STM32FreeRTOS.h>
 #include "../include/utils/Heartbeat.h"
 #include "../include/utils/FrameCodec.h"
 #include "../include/utils/LoraManager.h"
@@ -13,6 +14,7 @@
 #include "../include/fc/State.h"
 #include "../include/fc/CmdParser.h"
 #include "../include/fc/UartManager.h"
+#include "../include/fc/StateProcess.h"
 #include "../include/navc/Sensors.h" // For SensorPacket structure
 
 // Already defined in Heartbeat.h, no need to redefine here
@@ -24,6 +26,7 @@ StateManager stateManager;
 CmdParser cmdParser(stateManager);
 LoraManager loraManager;
 UartManager uartManager; // For binary packet reception from NAVC
+StateProcessManager stateProcessManager;
 
 // Task scheduling variables
 unsigned long lastStatusUpdate = 0;
@@ -350,6 +353,9 @@ void updateHeartbeatPattern() {
     default:
       heartbeat.setPattern(HB_ERROR);
   }
+  
+  // Update state processes based on current state
+  stateProcessManager.updateProcesses(stateManager.getCurrentState());
 }
 
 // Report LoRa link status similar to GS format
@@ -880,7 +886,6 @@ void setup() {
   Serial.println(buffer);
   FrameCodec::formatDebug(buffer, sizeof(buffer), "COMMANDS: <CMD:COMMAND:params:checksum>");
   Serial.println(buffer);
-  
   // Initialize LoRa communication
   FrameCodec::formatDebug(buffer, sizeof(buffer), "INITIALIZING_LORA");
   Serial.println(buffer);
@@ -896,6 +901,19 @@ void setup() {
     
     // Set the packet handler
     loraManager.onPacketReceived = handleLoraPacket;
+    
+    // Initialize FreeRTOS and StateProcessManager
+    FrameCodec::formatDebug(buffer, sizeof(buffer), "INITIALIZING_FREERTOS");
+    Serial.println(buffer);
+    
+    // Initialize state process manager
+    if (stateProcessManager.begin()) {
+      FrameCodec::formatDebug(buffer, sizeof(buffer), "STATE_PROCESS_MANAGER_INIT_SUCCESS");
+      Serial.println(buffer);
+    } else {
+      FrameCodec::formatDebug(buffer, sizeof(buffer), "STATE_PROCESS_MANAGER_INIT_FAILED");
+      Serial.println(buffer);
+    }
   } else {
     FrameCodec::formatDebug(buffer, sizeof(buffer), "LORA_INIT_FAILED");
     Serial.println(buffer);

@@ -6,7 +6,6 @@
  */
 
 #include "../include/fc/State.h"
-#include "../include/fc/ArmedLogic.h"
 #include "../include/utils/FrameCodec.h"
 #include "../include/navc/Sensors.h"  // For SensorPacket structure
 #include "../include/fc/UartManager.h" // For UartManager
@@ -694,19 +693,13 @@ void StateManager::updateState() {
     
     // Check for manual override (IDLE to ARMED via button press on A1)
     checkManualOverride();
-    
-    // Check for auto-recovery condition when in ARMED state
+      // Check for auto-recovery condition when in ARMED state
     if (currentState == STATE_ARMED && shouldAutoRecovery()) {
         changeState(STATE_RECOVERY);
         
         char buffer[64];
         FrameCodec::formatDebug(buffer, sizeof(buffer), "AUTO_RECOVERY_TRIGGERED");
         Serial.println(buffer);
-    }
-    
-    // Run ARMED state background logic
-    if (currentState == STATE_ARMED) {
-        ArmedLogic::update();
     }
     
     // Check background altitude test if enabled
