@@ -45,10 +45,13 @@ private:
     unsigned long armedTimestamp;
     unsigned long lastMotionTimestamp;
     bool inMotion;
-    
-    // Constants
+      // Constants
     static const unsigned long AUTO_RECOVERY_TIMEOUT = 1800000; // 30 minutes
     static constexpr float NO_MOTION_THRESHOLD = 0.02; // g
+    static const unsigned long AUTO_ARM_TIMEOUT = 10000; // 10 seconds to auto-ARM from IDLE
+    
+    // Auto-ARM variables
+    unsigned long idleTimestamp;
     
     // Manual override variables
     bool lastManualOverrideState;

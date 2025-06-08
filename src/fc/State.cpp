@@ -51,6 +51,7 @@ StateManager::StateManager() :
     armedTimestamp(0), 
     lastMotionTimestamp(0),
     inMotion(false),
+    idleTimestamp(0), // Initialize to 0, will be set properly in first updateState() call
     lastManualOverrideState(false),
     lastManualOverrideCheck(0),
     buzzerStartTime(0),
@@ -119,10 +120,11 @@ bool StateManager::changeState(SystemState newState) {
     
     // If transition is allowed, update state
     // Execute state transitions
-    switch (newState) {        
-        case STATE_IDLE:
+    switch (newState) {          case STATE_IDLE:
             // Stop any active systems
             stopBuzzer();
+            // Record when we entered IDLE state for auto-ARM timing
+            idleTimestamp = millis();
             // Play state change sound
             startBuzzerSound(STATE_IDLE);
             // Report state change
@@ -652,6 +654,44 @@ bool StateManager::isCommandAllowed(CommandType cmd) const {
 }
 
 void StateManager::updateState() {
+    // Check for auto-ARM condition when in IDLE state
+    if (currentState == STATE_IDLE) {
+        unsigned long now = millis();
+        
+        // Initialize idleTimestamp on first call if it's 0 (from constructor)
+        if (idleTimestamp == 0) {
+            idleTimestamp = now;
+            char buffer[64];
+            FrameCodec::formatDebug(buffer, sizeof(buffer), "IDLE_TIMER_STARTED");
+            Serial.println(buffer);
+            return; // Don't check for auto-ARM on the same call we initialize
+        }
+        
+        unsigned long timeInIdle = now - idleTimestamp;
+        
+        // Debug output to see timing (only print occasionally to avoid spam)
+        static unsigned long lastDebugTime = 0;
+        if (now - lastDebugTime >= 1000) { // Print every second
+            char debugBuffer[96];
+            snprintf(debugBuffer, sizeof(debugBuffer), 
+                    "<DEBUG:IDLE_TIMER:time_in_idle=%lu,threshold=%lu>", 
+                    timeInIdle, AUTO_ARM_TIMEOUT);
+            Serial.println(debugBuffer);
+            lastDebugTime = now;
+        }
+        
+        if (timeInIdle >= AUTO_ARM_TIMEOUT) {
+            // Auto-ARM after 5 seconds in IDLE
+            if (changeState(STATE_ARMED)) {
+                char buffer[96];
+                snprintf(buffer, sizeof(buffer), 
+                        "AUTO_ARM_TRIGGERED:waited_%lu_ms", timeInIdle);
+                FrameCodec::formatDebug(buffer, sizeof(buffer), buffer);
+                Serial.println(buffer);
+            }
+        }
+    }
+    
     // Check for manual override (IDLE to ARMED via button press on A1)
     checkManualOverride();
     
