@@ -705,9 +705,9 @@ void LoraManager::processIncomingPacket(LoraPacket* packet) {
     if (packet->dest != address && packet->dest != 0xFF) {
         return;
     }
-      
-    // Log packet info (but skip ping/pong packets to reduce log noise)
-    if (packet->type != LORA_TYPE_PING && packet->type != LORA_TYPE_PONG) {
+    // Log packet info (but skip ping/pong, telemetry, and status packets to reduce log noise)
+    if (packet->type != LORA_TYPE_PING && packet->type != LORA_TYPE_PONG && 
+        packet->type != LORA_TYPE_TELEM && packet->type != LORA_TYPE_STATUS) {
         char logBuffer[64];
         snprintf(logBuffer, sizeof(logBuffer), "LoRa RX: type=%d, id=%d, source=0x%02X", 
                 packet->type, packet->id, packet->source);
